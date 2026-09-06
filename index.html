@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Obsidian Meteorology — Katsina Weather Intelligence</title>
+<style>
+  :root {
+    --bg: #0a0e17;
+    --panel: #111827;
+    --card: #1f2937;
+    --cyan: #00d4ff;
+    --amber: #f59e0b;
+    --green: #10b981;
+    --red: #ef4444;
+    --text: #f9fafb;
+    --text-dim: #9ca3af;
+    --border: #374151;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
+    min-height: 100vh;
+    padding: 16px;
+  }
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 20px;
+  }
+  .title {
+    font-size: 1.4rem;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+  }
+  .title span { color: var(--cyan); }
+  .location-select {
+    background: var(--card);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 0.9rem;
+  }
+  .tier-toggle {
+    display: flex;
+    gap: 6px;
+    background: var(--panel);
+    padding: 4px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+  }
+  .tier-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    padding: 8px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 600;
+    transition: all 0.15s;
+  }
+  .tier-btn.active {
+    background: var(--cyan);
+    color: #0a0e17;
+  }
+  .status {
+    text-align: center;
+    padding: 40px;
+    color: var(--text-dim);
+  }
+  .error {
+    background: rgba(239,68,68,0.1);
+    border: 1px solid var(--red);
+    color: var(--red);
+    padding: 16px;
+    border-radius: 8px;
+    margin-bottom: 16px;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 14px;
+    margin-bottom: 20px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px;
+  }
+  .card-label {
+    color: var(--text-dim);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 8px;
+  }
+  .card-value {
+    font-size: 2rem;
+    font-weight: 700;
+    font-family: 'Courier New', monospace;
+  }
+  .card-sub {
+    color: var(--text-dim);
+    font-size: 0.8rem;
+    margin-top: 6px;
+  }
+  .explain {
+    background: rgba(0,212,255,0.08);
+    border-left: 3px solid var(--cyan);
+    padding: 10px 14px;
+    border-radius: 0 6px 6px 0;
+    font-size: 0.85rem;
+    color: var(--text-dim);
+    margin-top: 10px;
+  }
+  .forecast-row {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .day-card {
+    background: var(--card);
+    border-radius: 8px;
+    padding: 10px 6px;
+    text-align: center;
+    font-size: 0.75rem;
+  }
+  .day-card .day-name { color: var(--text-dim); margin-bottom: 6px; }
+  .day-card .day-temp { font-weight: 700; font-family: 'Courier New', monospace; }
+  .day-card .day-rain { color: var(--cyan); margin-top: 4px; }
+  .advanced-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8rem;
+    font-family: 'Courier New', monospace;
+  }
+  .advanced-table th, .advanced-table td {
+    text-align: left;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  .advanced-table th { color: var(--text-dim); font-weight: 600; }
+  .footer {
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 0.75rem;
+    margin-top: 24px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+  }
+  .footer a { color: var(--cyan); text-decoration: none; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="title">OBSIDIAN <span>METEOROLOGY</span></div>
+  <select class="location-select" id="locationSelect">
+    <option value="12.9908,7.6018">Katsina</option>
+    <option value="13.0059,7.8814">Katsina State (Daura)</option>
+    <option value="9.0765,7.3986">Abuja (FCT)</option>
+    <option value="6.5244,3.3792">Lagos</option>
+  </select>
+  <div class="tier-toggle">
+    <button class="tier-btn active" data-tier="student">Student</button>
+    <button class="tier-btn" data-tier="advanced">Advanced</button>
+    <button class="tier-btn" data-tier="nimet">NiMET</button>
+  </div>
+</div>
+
+<div id="content">
+  <div class="status">Loading live data...</div>
+</div>
+
+<div class="footer">
+  Live data: <a href="https://open-meteo.com" target="_blank">Open-Meteo</a> (free, no API key required, CC BY 4.0)
+  &nbsp;•&nbsp; Obsidian Meteorology Prototype v0.1
+</div>
+
+<script>
+const WEATHER_CODES = {
+  0: "Clear sky", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
+  45: "Fog", 48: "Depositing rime fog",
+  51: "Light drizzle", 53: "Moderate drizzle", 55: "Dense drizzle",
+  61: "Slight rain", 63: "Moderate rain", 65: "Heavy rain",
+  80: "Slight rain showers", 81: "Moderate rain showers", 82: "Violent rain showers",
+  95: "Thunderstorm", 96: "Thunderstorm with hail", 99: "Thunderstorm with heavy hail"
+};
+
+let currentTier = "student";
+let latestData = null;
+
+async function loadWeather(lat, lon) {
+  const content = document.getElementById("content");
+  content.innerHTML = '<div class="status">Loading live data...</div>';
+
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
+    `&current=temperature_2m,relative_humidity_2m,apparent_temperature,wind_speed_10m,precipitation,weather_code,surface_pressure` +
+    `&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,weather_code,wind_speed_10m_max,uv_index_max` +
+    `&timezone=Africa%2FLagos`;
+
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`API returned status ${response.status}`);
+    const data = await response.json();
+    latestData = data;
+    render();
+  } catch (err) {
+    content.innerHTML = `<div class="error">
+      Could not load live weather data: ${err.message}.<br>
+      Check your internet connection and try again — this prototype requires
+      a live connection to Open-Meteo's free API.
+    </div>`;
+  }
+}
+
+function render() {
+  if (!latestData) return;
+  if (currentTier === "student") renderStudent();
+  else if (currentTier === "advanced") renderAdvanced();
+  else renderNimet();
+}
+
+function renderStudent() {
+  const d = latestData;
+  const c = d.current;
+  const daily = d.daily;
+  const code = WEATHER_CODES[c.weather_code] || "Unknown conditions";
+
+  let forecastHtml = "";
+  for (let i = 0; i < 7; i++) {
+    const date = new Date(daily.time[i]);
+    const dayName = date.toLocaleDateString('en-US', { weekday: 'short' });
+    forecastHtml += `
+      <div class="day-card">
+        <div class="day-name">${dayName}</div>
+        <div class="day-temp">${Math.round(daily.temperature_2m_max[i])}°/${Math.round(daily.temperature_2m_min[i])}°</div>
+        <div class="day-rain">${daily.precipitation_sum[i].toFixed(1)}mm</div>
+      </div>`;
+  }
+
+  document.getElementById("content").innerHTML = `
+    <div class="grid">
+      <div class="card">
+        <div class="card-label">Right now</div>
+        <div class="card-value">${Math.round(c.temperature_2m)}°C</div>
+        <div class="card-sub">${code}</div>
+        <div class="explain">Feels like ${Math.round(c.apparent_temperature)}°C — this accounts for humidity and wind, so it can feel different from the actual air temperature.</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Humidity</div>
+        <div class="card-value">${c.relative_humidity_2m}%</div>
+        <div class="explain">Above 60% in Katsina's heat means sweat evaporates slower, so it feels hotter than the number alone suggests.</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Wind</div>
+        <div class="card-value">${Math.round(c.wind_speed_10m)}<span style="font-size:1rem"> km/h</span></div>
+        <div class="explain">Measured 10 meters above ground — the international standard height for comparing wind readings anywhere in the world.</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Rain today</div>
+        <div class="card-value">${c.precipitation.toFixed(1)}<span style="font-size:1rem"> mm</span></div>
+        <div class="explain">1mm of rain = 1 liter of water per square meter of ground.</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-label">7-Day Outlook</div>
+      <div class="forecast-row">${forecastHtml}</div>
+    </div>
+  `;
+}
+
+function renderAdvanced() {
+  const d = latestData;
+  const c = d.current;
+  const daily = d.daily;
+
+  let rows = "";
+  for (let i = 0; i < 7; i++) {
+    rows += `<tr>
+      <td>${daily.time[i]}</td>
+      <td>${daily.temperature_2m_max[i]}</td>
+      <td>${daily.temperature_2m_min[i]}</td>
+      <td>${daily.precipitation_sum[i]}</td>
+      <td>${daily.wind_speed_10m_max[i]}</td>
+      <td>${daily.uv_index_max[i]}</td>
+      <td>${WEATHER_CODES[daily.weather_code[i]] || daily.weather_code[i]}</td>
+    </tr>`;
+  }
+
+  document.getElementById("content").innerHTML = `
+    <div class="grid">
+      <div class="card">
+        <div class="card-label">temperature_2m</div>
+        <div class="card-value">${c.temperature_2m}°C</div>
+      </div>
+      <div class="card">
+        <div class="card-label">apparent_temperature</div>
+        <div class="card-value">${c.apparent_temperature}°C</div>
+      </div>
+      <div class="card">
+        <div class="card-label">relative_humidity_2m</div>
+        <div class="card-value">${c.relative_humidity_2m}%</div>
+      </div>
+      <div class="card">
+        <div class="card-label">surface_pressure</div>
+        <div class="card-value">${c.surface_pressure}<span style="font-size:1rem"> hPa</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-label">Daily aggregates (raw)</div>
+      <table class="advanced-table">
+        <tr><th>Date</th><th>T-max °C</th><th>T-min °C</th><th>Precip mm</th><th>Wind max km/h</th><th>UV max</th><th>Code</th></tr>
+        ${rows}
+      </table>
+    </div>
+  `;
+}
+
+function renderNimet() {
+  const d = latestData;
+  const c = d.current;
+  const daily = d.daily;
+  const code = WEATHER_CODES[c.weather_code] || "N/A";
+
+  document.getElementById("content").innerHTML = `
+    <div class="grid">
+      <div class="card">
+        <div class="card-label">Station Reading — Current</div>
+        <div class="card-value">${c.temperature_2m}°C</div>
+        <div class="card-sub">Condition: ${code} | Pressure: ${c.surface_pressure} hPa</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Wind Vector</div>
+        <div class="card-value">${c.wind_speed_10m} km/h</div>
+        <div class="card-sub">Measured at 10m AGL</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Precipitation (24h)</div>
+        <div class="card-value">${c.precipitation} mm</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Relative Humidity</div>
+        <div class="card-value">${c.relative_humidity_2m}%</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-label">7-Day Synoptic Summary</div>
+      <table class="advanced-table">
+        <tr><th>Date</th><th>Tmax</th><th>Tmin</th><th>Precip Sum</th><th>Max Wind</th><th>UV Index</th></tr>
+        ${daily.time.map((t,i) => `<tr>
+          <td>${t}</td><td>${daily.temperature_2m_max[i]}°C</td><td>${daily.temperature_2m_min[i]}°C</td>
+          <td>${daily.precipitation_sum[i]}mm</td><td>${daily.wind_speed_10m_max[i]}km/h</td>
+          <td>${daily.uv_index_max[i]}</td>
+        </tr>`).join("")}
+      </table>
+    </div>
+  `;
+}
+
+document.querySelectorAll(".tier-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tier-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    currentTier = btn.dataset.tier;
+    render();
+  });
+});
+
+document.getElementById("locationSelect").addEventListener("change", (e) => {
+  const [lat, lon] = e.target.value.split(",");
+  loadWeather(lat, lon);
+});
+
+// Initial load — Katsina
+loadWeather(12.9908, 7.6018);
+</script>
+
+</body>
+</html>
