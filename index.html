@@ -177,8 +177,31 @@
   </div>
 </div>
 
+<div class="tier-toggle" style="margin-bottom:16px; display:inline-flex;">
+  <button class="tier-btn active" data-mode="live">Live &amp; Forecast</button>
+  <button class="tier-btn" data-mode="historical">Historical Climate</button>
+</div>
+
 <div id="content">
   <div class="status">Loading live data...</div>
+</div>
+
+<div id="historical-content" style="display:none;">
+  <div class="card" style="margin-bottom:14px;">
+    <div class="card-label">Historical range</div>
+    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:8px;">
+      <label style="font-size:0.85rem; color:var(--text-dim);">From year:
+        <input type="number" id="histStartYear" value="1990" min="1981" max="2025"
+          style="background:var(--card); border:1px solid var(--border); color:var(--text); padding:6px 8px; border-radius:6px; width:90px; margin-left:6px;">
+      </label>
+      <label style="font-size:0.85rem; color:var(--text-dim);">To year:
+        <input type="number" id="histEndYear" value="2024" min="1981" max="2025"
+          style="background:var(--card); border:1px solid var(--border); color:var(--text); padding:6px 8px; border-radius:6px; width:90px; margin-left:6px;">
+      </label>
+      <button id="loadHistoricalBtn" class="tier-btn" style="background:var(--cyan); color:#0a0e17;">Load Data</button>
+    </div>
+  </div>
+  <div id="historical-results"><div class="status">Choose a year range and click "Load Data"</div></div>
 </div>
 
 <div class="footer">
@@ -186,6 +209,7 @@
   &nbsp;•&nbsp; Obsidian Meteorology Prototype v0.1
 </div>
 
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script>
 const WEATHER_CODES = {
   0: "Clear sky", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
@@ -379,6 +403,230 @@ document.querySelectorAll(".tier-btn").forEach(btn => {
 document.getElementById("locationSelect").addEventListener("change", (e) => {
   const [lat, lon] = e.target.value.split(",");
   loadWeather(lat, lon);
+});
+
+// ============================================================
+// HISTORICAL CLIMATE MODULE
+// Pure functions below are unit-tested in test_climate_math.js
+// against known values before being wired in here.
+// ============================================================
+
+function parseNasaPowerSeries(paramObject) {
+  return Object.entries(paramObject).map(([dateStr, value]) => ({
+    date: dateStr,
+    year: parseInt(dateStr.substring(0, 4)),
+    value: value
+  })).filter(d => d.value !== -999); // NASA POWER missing-data sentinel
+}
+
+function aggregateAnnualRainfall(dailyPrecip) {
+  const byYear = {};
+  for (const d of dailyPrecip) {
+    byYear[d.year] = (byYear[d.year] || 0) + d.value;
+  }
+  return Object.entries(byYear)
+    .map(([year, total]) => ({ year: parseInt(year), total: Math.round(total * 10) / 10 }))
+    .sort((a, b) => a.year - b.year);
+}
+
+function aggregateAnnualMeanTemp(dailyTemp) {
+  const byYear = {};
+  for (const d of dailyTemp) {
+    if (!byYear[d.year]) byYear[d.year] = { sum: 0, count: 0 };
+    byYear[d.year].sum += d.value;
+    byYear[d.year].count += 1;
+  }
+  return Object.entries(byYear)
+    .map(([year, agg]) => ({ year: parseInt(year), mean: Math.round((agg.sum / agg.count) * 10) / 10 }))
+    .sort((a, b) => a.year - b.year);
+}
+
+function linearRegression(points) {
+  const n = points.length;
+  if (n < 2) return { slope: 0, intercept: 0, r2: 0 };
+  const xs = points.map(p => p.year);
+  const ys = points.map(p => p.value);
+  const meanX = xs.reduce((a, b) => a + b, 0) / n;
+  const meanY = ys.reduce((a, b) => a + b, 0) / n;
+  let num = 0, den = 0;
+  for (let i = 0; i < n; i++) {
+    num += (xs[i] - meanX) * (ys[i] - meanY);
+    den += (xs[i] - meanX) ** 2;
+  }
+  const slope = den === 0 ? 0 : num / den;
+  const intercept = meanY - slope * meanX;
+  let ssRes = 0, ssTot = 0;
+  for (let i = 0; i < n; i++) {
+    const predicted = slope * xs[i] + intercept;
+    ssRes += (ys[i] - predicted) ** 2;
+    ssTot += (ys[i] - meanY) ** 2;
+  }
+  const r2 = ssTot === 0 ? 0 : 1 - (ssRes / ssTot);
+  return {
+    slope: Math.round(slope * 1000) / 1000,
+    intercept: Math.round(intercept * 100) / 100,
+    r2: Math.round(r2 * 1000) / 1000
+  };
+}
+
+function findExtremeYear(yearlyData, valueKey, mode) {
+  return yearlyData.reduce((best, current) => {
+    if (mode === 'max') return current[valueKey] > best[valueKey] ? current : best;
+    return current[valueKey] < best[valueKey] ? current : best;
+  });
+}
+
+let rainChart = null;
+let tempChart = null;
+
+async function loadHistorical() {
+  const resultsDiv = document.getElementById("historical-results");
+  const startYear = document.getElementById("histStartYear").value;
+  const endYear = document.getElementById("histEndYear").value;
+  const [lat, lon] = document.getElementById("locationSelect").value.split(",");
+
+  resultsDiv.innerHTML = '<div class="status">Fetching historical data from NASA POWER (this can take a few seconds for long ranges)...</div>';
+
+  const url = `https://power.larc.nasa.gov/api/temporal/daily/point?` +
+    `latitude=${lat}&longitude=${lon}` +
+    `&start=${startYear}0101&end=${endYear}1231` +
+    `&parameters=T2M,PRECTOTCORR&community=AG&format=JSON`;
+
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`API returned status ${response.status}`);
+    const data = await response.json();
+
+    const rawTemp = data.properties.parameter.T2M;
+    const rawPrecip = data.properties.parameter.PRECTOTCORR;
+
+    const dailyTemp = parseNasaPowerSeries(rawTemp);
+    const dailyPrecip = parseNasaPowerSeries(rawPrecip);
+
+    const annualRain = aggregateAnnualRainfall(dailyPrecip);
+    const annualTemp = aggregateAnnualMeanTemp(dailyTemp);
+
+    const rainTrend = linearRegression(annualRain.map(y => ({ year: y.year, value: y.total })));
+    const tempTrend = linearRegression(annualTemp.map(y => ({ year: y.year, value: y.mean })));
+
+    const wettestYear = findExtremeYear(annualRain, 'total', 'max');
+    const driestYear = findExtremeYear(annualRain, 'total', 'min');
+    const hottestYear = findExtremeYear(annualTemp, 'mean', 'max');
+    const coldestYear = findExtremeYear(annualTemp, 'mean', 'min');
+
+    renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
+                      wettestYear, driestYear, hottestYear, coldestYear);
+
+  } catch (err) {
+    resultsDiv.innerHTML = `<div class="error">
+      Could not load historical data: ${err.message}.<br>
+      NASA POWER can be slow or briefly unavailable — try a smaller year range or try again shortly.
+    </div>`;
+  }
+}
+
+function renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
+                           wettestYear, driestYear, hottestYear, coldestYear) {
+  const resultsDiv = document.getElementById("historical-results");
+
+  const rainDirection = rainTrend.slope > 0 ? "increasing" : rainTrend.slope < 0 ? "decreasing" : "flat";
+  const tempDirection = tempTrend.slope > 0 ? "warming" : tempTrend.slope < 0 ? "cooling" : "flat";
+
+  let studentSummary = `
+    <div class="explain">
+      Over this period, annual rainfall has been <strong>${rainDirection}</strong>
+      by roughly ${Math.abs(rainTrend.slope).toFixed(1)} mm per year on average.
+      The wettest year on record here was <strong>${wettestYear.year}</strong>
+      (${wettestYear.total} mm), and the driest was <strong>${driestYear.year}</strong>
+      (${driestYear.total} mm).
+    </div>
+    <div class="explain">
+      Average temperature has been <strong>${tempDirection}</strong> by roughly
+      ${Math.abs(tempTrend.slope).toFixed(3)}°C per year. The hottest year on
+      average was <strong>${hottestYear.year}</strong> (${hottestYear.mean}°C),
+      the coolest was <strong>${coldestYear.year}</strong> (${coldestYear.mean}°C).
+    </div>`;
+
+  let advancedSummary = `
+    <table class="advanced-table">
+      <tr><th>Metric</th><th>Rainfall</th><th>Temperature</th></tr>
+      <tr><td>Trend (slope)</td><td>${rainTrend.slope} mm/year</td><td>${tempTrend.slope} °C/year</td></tr>
+      <tr><td>R²</td><td>${rainTrend.r2}</td><td>${tempTrend.r2}</td></tr>
+      <tr><td>Wettest / Hottest year</td><td>${wettestYear.year} (${wettestYear.total}mm)</td><td>${hottestYear.year} (${hottestYear.mean}°C)</td></tr>
+      <tr><td>Driest / Coolest year</td><td>${driestYear.year} (${driestYear.total}mm)</td><td>${coldestYear.year} (${coldestYear.mean}°C)</td></tr>
+    </table>`;
+
+  resultsDiv.innerHTML = `
+    <div class="card" style="margin-bottom:14px;">
+      <div class="card-label">Summary (${currentTier} view)</div>
+      ${currentTier === 'student' ? studentSummary : advancedSummary}
+    </div>
+    <div class="card" style="margin-bottom:14px;">
+      <div class="card-label">Annual Rainfall (mm)</div>
+      <canvas id="rainChartCanvas" height="80"></canvas>
+    </div>
+    <div class="card">
+      <div class="card-label">Annual Mean Temperature (°C)</div>
+      <canvas id="tempChartCanvas" height="80"></canvas>
+    </div>
+  `;
+
+  if (rainChart) rainChart.destroy();
+  if (tempChart) tempChart.destroy();
+
+  const rainCtx = document.getElementById("rainChartCanvas").getContext("2d");
+  rainChart = new Chart(rainCtx, {
+    type: 'bar',
+    data: {
+      labels: annualRain.map(y => y.year),
+      datasets: [{
+        label: 'Annual rainfall (mm)',
+        data: annualRain.map(y => y.total),
+        backgroundColor: '#00d4ff'
+      }]
+    },
+    options: {
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#9ca3af' }, grid: { color: '#374151' } },
+        y: { ticks: { color: '#9ca3af' }, grid: { color: '#374151' } }
+      }
+    }
+  });
+
+  const tempCtx = document.getElementById("tempChartCanvas").getContext("2d");
+  tempChart = new Chart(tempCtx, {
+    type: 'line',
+    data: {
+      labels: annualTemp.map(y => y.year),
+      datasets: [{
+        label: 'Mean temperature (°C)',
+        data: annualTemp.map(y => y.mean),
+        borderColor: '#f59e0b',
+        backgroundColor: 'rgba(245,158,11,0.1)',
+        tension: 0.2
+      }]
+    },
+    options: {
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#9ca3af' }, grid: { color: '#374151' } },
+        y: { ticks: { color: '#9ca3af' }, grid: { color: '#374151' } }
+      }
+    }
+  });
+}
+
+document.getElementById("loadHistoricalBtn").addEventListener("click", loadHistorical);
+
+document.querySelectorAll('[data-mode]').forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll('[data-mode]').forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    const mode = btn.dataset.mode;
+    document.getElementById("content").style.display = mode === "live" ? "block" : "none";
+    document.getElementById("historical-content").style.display = mode === "historical" ? "block" : "none";
+  });
 });
 
 // Initial load — Katsina
