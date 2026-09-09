@@ -460,12 +460,16 @@ function renderNimet() {
   `;
 }
 
-document.querySelectorAll(".tier-btn").forEach(btn => {
+document.querySelectorAll("[data-tier]").forEach(btn => {
   btn.addEventListener("click", () => {
-    document.querySelectorAll(".tier-btn").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll("[data-tier]").forEach(b => b.classList.remove("active"));
     btn.classList.add("active");
     currentTier = btn.dataset.tier;
     render();
+    if (document.getElementById("historical-content").style.display !== "none" &&
+        document.getElementById("historical-results").innerHTML.trim() !== "") {
+      loadHistorical();
+    }
   });
 });
 
@@ -545,8 +549,126 @@ function findExtremeYear(yearlyData, valueKey, mode) {
   });
 }
 
+// ============================================================
+// RAINFALL ONSET & YEAR-OVER-YEAR VARIABILITY
+// Pure functions below are unit-tested in test_rainfall_onset.js
+// against known values (including a false-start rejection case)
+// before being wired in here. Onset criterion: first 3-day window
+// with >=20mm cumulative rain, where no 10+ day dry spell follows
+// in the next 30 days (standard AGRHYMET/WMO Sahel definition).
+// ============================================================
+
+function dateStringToDayOfYear(dateStr) {
+  const year = parseInt(dateStr.substring(0, 4));
+  const month = parseInt(dateStr.substring(4, 6));
+  const day = parseInt(dateStr.substring(6, 8));
+  const date = Date.UTC(year, month - 1, day);
+  const startOfYear = Date.UTC(year, 0, 1);
+  return Math.round((date - startOfYear) / 86400000) + 1;
+}
+
+function dayOfYearToDateString(year, dayOfYear) {
+  const date = new Date(Date.UTC(year, 0, 1));
+  date.setUTCDate(date.getUTCDate() + dayOfYear - 1);
+  const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(date.getUTCDate()).padStart(2, '0');
+  return `${date.getUTCFullYear()}-${mm}-${dd}`;
+}
+
+function groupDailyByYear(dailySeries) {
+  const byYear = {};
+  for (const d of dailySeries) {
+    if (!byYear[d.year]) byYear[d.year] = [];
+    byYear[d.year].push({ dayOfYear: dateStringToDayOfYear(d.date), value: d.value });
+  }
+  for (const year in byYear) {
+    byYear[year].sort((a, b) => a.dayOfYear - b.dayOfYear);
+  }
+  return byYear;
+}
+
+function detectOnsetForYear(yearDays, options = {}) {
+  const {
+    startDayOfYear = 60,
+    thresholdMM = 20,
+    windowDays = 3,
+    dryspellCheckDays = 30,
+    maxDrySpellDays = 10,
+    dryDayThreshold = 1.0
+  } = options;
+
+  const valueByDay = {};
+  for (const d of yearDays) valueByDay[d.dayOfYear] = d.value;
+  const maxDay = yearDays.length ? yearDays[yearDays.length - 1].dayOfYear : 0;
+
+  for (let start = startDayOfYear; start <= maxDay - windowDays + 1; start++) {
+    let windowSum = 0;
+    for (let k = 0; k < windowDays; k++) windowSum += valueByDay[start + k] || 0;
+    if (windowSum < thresholdMM) continue;
+
+    const checkStart = start + windowDays;
+    const checkEnd = Math.min(checkStart + dryspellCheckDays - 1, maxDay);
+    let longestDry = 0, currentDry = 0;
+    for (let day = checkStart; day <= checkEnd; day++) {
+      const v = valueByDay[day] || 0;
+      if (v < dryDayThreshold) {
+        currentDry++;
+        longestDry = Math.max(longestDry, currentDry);
+      } else {
+        currentDry = 0;
+      }
+    }
+    if (longestDry <= maxDrySpellDays) {
+      return start;
+    }
+  }
+  return null;
+}
+
+function computeOnsetDatesAllYears(dailySeries, options = {}) {
+  const byYear = groupDailyByYear(dailySeries);
+  return Object.keys(byYear)
+    .map(yearStr => {
+      const year = parseInt(yearStr);
+      const onsetDay = detectOnsetForYear(byYear[year], options);
+      return {
+        year,
+        onsetDayOfYear: onsetDay,
+        onsetDate: onsetDay ? dayOfYearToDateString(year, onsetDay) : null
+      };
+    })
+    .sort((a, b) => a.year - b.year);
+}
+
+function coefficientOfVariation(values) {
+  const n = values.length;
+  if (n === 0) return { mean: 0, stdDev: 0, cv: 0 };
+  const mean = values.reduce((a, b) => a + b, 0) / n;
+  const variance = values.reduce((sum, v) => sum + (v - mean) ** 2, 0) / n;
+  const stdDev = Math.sqrt(variance);
+  const cv = mean === 0 ? 0 : (stdDev / mean) * 100;
+  return {
+    mean: Math.round(mean * 100) / 100,
+    stdDev: Math.round(stdDev * 100) / 100,
+    cv: Math.round(cv * 100) / 100
+  };
+}
+
+function onsetVariability(onsetResults) {
+  const validOnsets = onsetResults.filter(r => r.onsetDayOfYear !== null).map(r => r.onsetDayOfYear);
+  const stats = coefficientOfVariation(validOnsets);
+  const missingYears = onsetResults.filter(r => r.onsetDayOfYear === null).map(r => r.year);
+  return {
+    ...stats,
+    yearsWithValidOnset: validOnsets.length,
+    yearsTotal: onsetResults.length,
+    missingYears
+  };
+}
+
 let rainChart = null;
 let tempChart = null;
+let onsetChart = null;
 
 async function loadHistorical() {
   const resultsDiv = document.getElementById("historical-results");
@@ -583,8 +705,16 @@ async function loadHistorical() {
     const hottestYear = findExtremeYear(annualTemp, 'mean', 'max');
     const coldestYear = findExtremeYear(annualTemp, 'mean', 'min');
 
+    const onsetResults = computeOnsetDatesAllYears(dailyPrecip);
+    const onsetStats = onsetVariability(onsetResults);
+    const validOnsetPoints = onsetResults
+      .filter(r => r.onsetDayOfYear !== null)
+      .map(r => ({ year: r.year, value: r.onsetDayOfYear }));
+    const onsetTrend = linearRegression(validOnsetPoints);
+
     renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
-                      wettestYear, driestYear, hottestYear, coldestYear);
+                      wettestYear, driestYear, hottestYear, coldestYear,
+                      onsetResults, onsetStats, onsetTrend);
 
   } catch (err) {
     resultsDiv.innerHTML = `<div class="error">
@@ -595,11 +725,19 @@ async function loadHistorical() {
 }
 
 function renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
-                           wettestYear, driestYear, hottestYear, coldestYear) {
+                           wettestYear, driestYear, hottestYear, coldestYear,
+                           onsetResults, onsetStats, onsetTrend) {
   const resultsDiv = document.getElementById("historical-results");
 
   const rainDirection = rainTrend.slope > 0 ? "increasing" : rainTrend.slope < 0 ? "decreasing" : "flat";
   const tempDirection = tempTrend.slope > 0 ? "warming" : tempTrend.slope < 0 ? "cooling" : "flat";
+  const onsetDirection = onsetTrend.slope > 0 ? "later" : onsetTrend.slope < 0 ? "earlier" : "roughly stable";
+
+  const validOnsetResults = onsetResults.filter(r => r.onsetDayOfYear !== null);
+  const earliestOnset = validOnsetResults.length
+    ? validOnsetResults.reduce((a, b) => a.onsetDayOfYear < b.onsetDayOfYear ? a : b) : null;
+  const latestOnset = validOnsetResults.length
+    ? validOnsetResults.reduce((a, b) => a.onsetDayOfYear > b.onsetDayOfYear ? a : b) : null;
 
   let studentSummary = `
     <div class="explain">
@@ -614,6 +752,18 @@ function renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
       ${Math.abs(tempTrend.slope).toFixed(3)}°C per year. The hottest year on
       average was <strong>${hottestYear.year}</strong> (${hottestYear.mean}°C),
       the coolest was <strong>${coldestYear.year}</strong> (${coldestYear.mean}°C).
+    </div>
+    <div class="explain">
+      ${validOnsetResults.length > 0 ? `
+        The rainy season onset was detected in <strong>${onsetStats.yearsWithValidOnset}</strong>
+        of the <strong>${onsetStats.yearsTotal}</strong> years in this range, arriving
+        <strong>${onsetDirection}</strong> over time (about ${Math.abs(onsetTrend.slope).toFixed(2)}
+        days/year). Onset ranged from as early as
+        <strong>${earliestOnset.onsetDate}</strong> to as late as
+        <strong>${latestOnset.onsetDate}</strong>, with year-to-year timing varying by
+        about <strong>${onsetStats.cv}%</strong> — the higher this number, the less
+        predictable planting timing has been.
+      ` : `No reliable rainy season onset could be detected in this year range from this dataset.`}
     </div>`;
 
   let advancedSummary = `
@@ -623,6 +773,14 @@ function renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
       <tr><td>R²</td><td>${rainTrend.r2}</td><td>${tempTrend.r2}</td></tr>
       <tr><td>Wettest / Hottest year</td><td>${wettestYear.year} (${wettestYear.total}mm)</td><td>${hottestYear.year} (${hottestYear.mean}°C)</td></tr>
       <tr><td>Driest / Coolest year</td><td>${driestYear.year} (${driestYear.total}mm)</td><td>${coldestYear.year} (${coldestYear.mean}°C)</td></tr>
+    </table>
+    <table class="advanced-table" style="margin-top:10px;">
+      <tr><th colspan="2">Rainy Season Onset (AGRHYMET/WMO criterion: 20mm/3-day window, ≤10-day dry spell in following 30 days)</th></tr>
+      <tr><td>Onset trend</td><td>${onsetTrend.slope} days/year (${onsetDirection}), R²=${onsetTrend.r2}</td></tr>
+      <tr><td>Mean onset day-of-year</td><td>${onsetStats.mean || 'n/a'} (std dev ${onsetStats.stdDev || 'n/a'} days)</td></tr>
+      <tr><td>Onset variability (CV)</td><td>${onsetStats.cv || 'n/a'}%</td></tr>
+      <tr><td>Years with detected onset</td><td>${onsetStats.yearsWithValidOnset} / ${onsetStats.yearsTotal}${onsetStats.missingYears.length ? ` (missing: ${onsetStats.missingYears.join(', ')})` : ''}</td></tr>
+      <tr><td>Earliest / Latest onset</td><td>${earliestOnset ? earliestOnset.onsetDate : 'n/a'} / ${latestOnset ? latestOnset.onsetDate : 'n/a'}</td></tr>
     </table>`;
 
   resultsDiv.innerHTML = `
@@ -634,14 +792,19 @@ function renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
       <div class="card-label">Annual Rainfall (mm)</div>
       <canvas id="rainChartCanvas" height="80"></canvas>
     </div>
-    <div class="card">
+    <div class="card" style="margin-bottom:14px;">
       <div class="card-label">Annual Mean Temperature (°C)</div>
       <canvas id="tempChartCanvas" height="80"></canvas>
+    </div>
+    <div class="card">
+      <div class="card-label">Rainy Season Onset (day of year, gaps = no detected onset)</div>
+      <canvas id="onsetChartCanvas" height="80"></canvas>
     </div>
   `;
 
   if (rainChart) rainChart.destroy();
   if (tempChart) tempChart.destroy();
+  if (onsetChart) onsetChart.destroy();
 
   const rainCtx = document.getElementById("rainChartCanvas").getContext("2d");
   rainChart = new Chart(rainCtx, {
@@ -681,6 +844,49 @@ function renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
       scales: {
         x: { ticks: { color: '#9ca3af' }, grid: { color: '#374151' } },
         y: { ticks: { color: '#9ca3af' }, grid: { color: '#374151' } }
+      }
+    }
+  });
+
+  const onsetCtx = document.getElementById("onsetChartCanvas").getContext("2d");
+  onsetChart = new Chart(onsetCtx, {
+    type: 'scatter',
+    data: {
+      datasets: [{
+        label: 'Onset (day of year)',
+        data: onsetResults
+          .filter(r => r.onsetDayOfYear !== null)
+          .map(r => ({ x: r.year, y: r.onsetDayOfYear })),
+        backgroundColor: '#22c55e',
+        pointRadius: 5
+      }]
+    },
+    options: {
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (ctx) => {
+              const match = onsetResults.find(r => r.year === ctx.parsed.x);
+              return match ? `${match.year}: onset ${match.onsetDate} (day ${match.onsetDayOfYear})` : '';
+            }
+          }
+        }
+      },
+      scales: {
+        x: { title: { display: true, text: 'Year', color: '#9ca3af' }, ticks: { color: '#9ca3af' }, grid: { color: '#374151' } },
+        y: {
+          title: { display: true, text: 'Onset date', color: '#9ca3af' },
+          ticks: {
+            color: '#9ca3af',
+            callback: (value) => {
+              const iso = dayOfYearToDateString(2021, Math.round(value)); // 2021: non-leap reference year, used only to convert day-of-year to a month/day label
+              const d = new Date(iso + 'T00:00:00Z');
+              return d.toLocaleString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+            }
+          },
+          grid: { color: '#374151' }
+        }
       }
     }
   });
