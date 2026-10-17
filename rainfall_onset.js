@@ -116,7 +116,7 @@ function onsetVariability(onsetResults) {
   };
 }
 
-module.exports = {
+if (typeof module !== "undefined") module.exports = {
   dateStringToDayOfYear,
   dayOfYearToDateString,
   groupDailyByYear,

@@ -70,7 +70,7 @@ function findExtremeYear(yearlyData, valueKey, mode) {
   });
 }
 
-module.exports = {
+if (typeof module !== "undefined") module.exports = {
   parseNasaPowerSeries,
   aggregateAnnualRainfall,
   aggregateAnnualMeanTemp,
