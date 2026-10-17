@@ -1,10 +1,16 @@
 // Rainfall onset detection and year-over-year variability analysis
 // Pure functions — no network, testable in isolation
 //
-// Onset criterion (AGRHYMET/WMO-style, standard in Sahel agromet research):
-//   First day where cumulative rainfall over 3 consecutive days >= 20mm,
-//   AND no dry spell longer than 10 days occurs in the following 30 days
-//   (filters out "false starts" — early rain that doesn't sustain the season).
+// Method: Sivakumar (1988), Agricultural and Forest Meteorology 42(4):295-305, as described in
+// later West African studies. Onset = the first date, from 1 May, on which
+//   - at least 20 mm of rain falls over 3 consecutive days, AND
+//   - no dry sequence longer than 7 days occurs in the following 30 days
+//     (this filters out "false starts": early rain that does not sustain the season).
+// Implementation choices NOT fixed by the criterion (see docs/onset-method.md):
+//   - a dry day is a day under 1.0 mm
+//   - the onset date is the first wet day (>= 1.0 mm) of the triggering 3-day window
+//   - the 30-day check starts the day after the 3-day window
+//   - missing days are never treated as dry or wet (see detectOnsetDetailed)
 
 function dateStringToDayOfYear(dateStr) {
   // dateStr format: "YYYYMMDD" (as returned by NASA POWER)
@@ -44,11 +50,11 @@ function detectOnsetDetailed(yearDays, options = {}) {
   //   'insufficient_data' missing days stop us from confirming the answer
   // Missing days (days absent from yearDays) are NEVER treated as dry or as zero rain.
   const {
-    startDayOfYear = 60,      // ~March 1 — earliest plausible search start
+    startDayOfYear = 121,     // 1 May in a non-leap year (computeOnsetDatesAllYears sets the exact day per year)
     thresholdMM = 20,         // cumulative rain needed in window to trigger a candidate
     windowDays = 3,
     dryspellCheckDays = 30,   // how far ahead to check for a false start
-    maxDrySpellDays = 10,     // longer than this in the check window = false start
+    maxDrySpellDays = 7,      // a dry sequence LONGER than this in the check window = false start
     dryDayThreshold = 1.0     // mm below which a day counts as "dry"
   } = options;
 
@@ -84,7 +90,13 @@ function detectOnsetDetailed(yearDays, options = {}) {
     if (confirmedLongest > maxDrySpellDays) continue;           // confirmed false start
     if (possibleLongest > maxDrySpellDays) return { day: null, status: 'insufficient_data' }; // cannot confirm
     if (unknownWindowBefore) return { day: null, status: 'insufficient_data' };               // cannot confirm it is the first
-    return { day: start, status: 'detected' };
+    // Onset date: the first wet day of the triggering window (a window can begin on a dry day)
+    let onsetDay = start;
+    for (let k = 0; k < windowDays; k++) {
+      const v = valueByDay[start + k];
+      if (v !== undefined && v >= dryDayThreshold) { onsetDay = start + k; break; }
+    }
+    return { day: onsetDay, status: 'detected' };
   }
   return { day: null, status: unknownWindowBefore ? 'insufficient_data' : 'none' };
 }
@@ -101,7 +113,9 @@ function computeOnsetDatesAllYears(dailySeries, options = {}, years = null) {
   return yearList
     .map(year => {
       const days = byYear[year] || [];
-      const detail = days.length ? detectOnsetDetailed(days, options) : { day: null, status: 'insufficient_data' };
+      const yearOptions = { ...options };
+      if (yearOptions.startDayOfYear === undefined) yearOptions.startDayOfYear = dateStringToDayOfYear(`${year}0501`); // 1 May, leap-safe
+      const detail = days.length ? detectOnsetDetailed(days, yearOptions) : { day: null, status: 'insufficient_data' };
       return {
         year,
         onsetDayOfYear: detail.day,

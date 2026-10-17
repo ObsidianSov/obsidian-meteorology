@@ -51,7 +51,7 @@ falseStartYear[159] = { dayOfYear: 160, value: 8 };
 falseStartYear[160] = { dayOfYear: 161, value: 7 };
 falseStartYear[161] = { dayOfYear: 162, value: 6 }; // real onset at day 160
 for (let d = 163; d <= 190; d += 5) falseStartYear[d - 1] = { dayOfYear: d, value: 2 };
-const rejectedFalseStart = detectOnsetForYear(falseStartYear);
+const rejectedFalseStart = detectOnsetForYear(falseStartYear, { startDayOfYear: 60 });
 check("rejects false start and finds real onset at day 160", rejectedFalseStart === 160);
 
 // Test 4: no valid onset in the data (e.g. drought year / insufficient rain)
@@ -125,11 +125,11 @@ const falseStartWithGap = daysFrom(d => {
   if (d > 162 && d % 5 === 0) return 2;
   return 0;
 }, 1, 250);
-const fs2 = detectOnsetDetailed(falseStartWithGap);
+const fs2 = detectOnsetDetailed(falseStartWithGap, { startDayOfYear: 60 });
 check("confirmed false start is rejected and the real onset (day 160) is found despite an unrelated missing day", fs2.status === 'detected' && fs2.day === 160);
 
 // A missing day inside the search period means we cannot prove the detected onset is the first
-const missingBefore = detectOnsetDetailed(daysFrom(d => d === 100 ? undefined : sustained(d), 1, 250));
+const missingBefore = detectOnsetDetailed(daysFrom(d => d === 130 ? undefined : sustained(d), 1, 250));
 check("missing day before the onset -> 'insufficient_data' (cannot prove it is the first onset)", missingBefore.status === 'insufficient_data');
 check("the same year with no missing day is 'detected'", detectOnsetDetailed(daysFrom(sustained, 1, 250)).status === 'detected');
 
@@ -137,6 +137,7 @@ check("the same year with no missing day is 'detected'", detectOnsetDetailed(day
 const burstWithGap = d => d === 150 || d === 151 ? 12 : (d > 152 && d % 5 === 0 ? 2 : 0);   // day 152 is missing: 12 + 12 = 24 mm already
 const gapInBurst = detectOnsetDetailed(daysFrom(d => d === 152 ? undefined : burstWithGap(d), 1, 250));
 check("threshold already reached by the valid days of the window -> 'detected'", gapInBurst.status === 'detected' && gapInBurst.day !== null);
+check("B5: onset is the first WET day, not a dry day at the start of the window (150, not 149)", gapInBurst.day === 150);
 
 // years list: a year with no data at all is reported, not skipped
 const withYears = computeOnsetDatesAllYears(fullYearSeries(2020, () => 0), {}, [2019, 2020]);
@@ -152,6 +153,29 @@ const vr = onsetVariability([
 check("onsetVariability lists insufficient-data years separately", vr.insufficientYears.length === 1 && vr.insufficientYears[0] === 2021);
 check("onsetVariability lists no-onset years separately", vr.noOnsetYears.length === 1 && vr.noOnsetYears[0] === 2020);
 check("onsetVariability still lists every year without an onset in missingYears", vr.missingYears.length === 2);
+
+
+// ---------- Milestone 1 step 3: Sivakumar (1988) criterion ----------
+// Defaults: search from 1 May, 20 mm in 3 days, no dry sequence longer than 7 days in the next 30
+const earlyBurst = daysFrom(d => (d >= 70 && d <= 72) ? 9 : (d >= 150 && d <= 152) ? 8 : (d > 152 && d % 5 === 0 ? 2 : 0), 1, 250);
+check("default search starts on 1 May: rain in March is ignored, onset is day 150", detectOnsetDetailed(earlyBurst).day === 150);
+check("the old March search start can still be requested explicitly (startDayOfYear: 60 sees the day-70 burst as a false start, still 150)", detectOnsetDetailed(earlyBurst, { startDayOfYear: 60 }).day === 150);
+
+// dry spell limit: a run of exactly 7 dry days is allowed, 8 is a false start
+const dryRun = n => daysFrom(d => (d >= 150 && d <= 152) ? 8 : (d >= 153 && d < 153 + n) ? 0 : (d >= 153 + n && d <= 220 ? (d % 6 === 0 ? 3 : 2) : 0), 1, 260);
+const dry7 = detectOnsetDetailed(dryRun(7));
+const dry8 = detectOnsetDetailed(dryRun(8));
+check("a dry sequence of exactly 7 days is allowed ('no dry sequence LONGER than 7 days')", dry7.status === 'detected' && dry7.day === 150);
+check("a dry sequence of 8 days makes it a false start", dry8.day !== 150);
+
+// leap-year safety: 1 May is day 121 in 2021 but day 122 in 2020
+const mayRain = (year) => fullYearSeries(year, d => (d >= (year % 4 === 0 ? 122 : 121) && d <= (year % 4 === 0 ? 124 : 123)) ? 8 : 0);
+const leapRes = computeOnsetDatesAllYears([...mayRain(2020), ...mayRain(2021)], { maxDrySpellDays: 40 });
+check("1 May is the first search day in both a leap year (2020) and a normal year (2021)",
+  leapRes.find(y => y.year === 2020).onsetDate === "2020-05-01" && leapRes.find(y => y.year === 2021).onsetDate === "2021-05-01");
+const aprilRain = (year) => fullYearSeries(year, d => (d >= (year % 4 === 0 ? 119 : 118) && d <= (year % 4 === 0 ? 121 : 120)) ? 8 : 0); // 28-30 April only
+const aprilRes = computeOnsetDatesAllYears([...aprilRain(2020), ...aprilRain(2021)], { maxDrySpellDays: 40 });
+check("a 24 mm burst on 28-30 April is before the search start: no onset in 2020 or 2021", aprilRes.length === 2 && aprilRes.every(y => y.onsetDate === null && y.status === 'none'));
 
 console.log(`\nRESULTS: ${passed}/${total} tests passed`);
 process.exit(passed === total ? 0 : 1);

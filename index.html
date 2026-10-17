@@ -557,7 +557,7 @@ function renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
       <tr><td>Driest / Coolest year</td><td>${driestYear.year} (${driestYear.total}mm)</td><td>${coldestYear.year} (${coldestYear.mean}°C)</td></tr>
     </table>
     <table class="advanced-table" style="margin-top:10px;">
-      <tr><th colspan="2">Rainy Season Onset (AGRHYMET/WMO criterion: 20mm/3-day window, ≤10-day dry spell in following 30 days)</th></tr>
+      <tr><th colspan="2">Rainy Season Onset (Sivakumar 1988 criterion: from 1 May, at least 20 mm in 3 consecutive days, no dry spell longer than 7 days in the following 30 days; dry day = under 1 mm)</th></tr>
       <tr><td>Onset trend</td><td>${onsetTrend.slope} days/year (${onsetDirection}), R²=${onsetTrend.r2}</td></tr>
       <tr><td>Mean onset day-of-year</td><td>${onsetStats.mean || 'n/a'} (std dev ${onsetStats.stdDev || 'n/a'} days)</td></tr>
       <tr><td>Onset variability (CV)</td><td>${onsetStats.cv || 'n/a'}%</td></tr>
