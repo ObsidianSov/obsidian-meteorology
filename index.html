@@ -211,9 +211,364 @@
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <!-- Scientific modules: single source of truth, also loaded by the unit tests -->
-<script src="knowledge_layer.js"></script>
-<script src="climate_math.js"></script>
-<script src="rainfall_onset.js"></script>
+<script>
+// ===== knowledge_layer.js (inlined by build.js: edit the module file, not this copy) =====
+// Meteorological Knowledge Layer — structured variable definitions,
+// separated from rendering so any tier/future feature can pull from
+// one source of truth instead of hardcoded strings scattered in the UI.
+
+const KNOWLEDGE_BASE = {
+  temperature: {
+    name: "Air Temperature",
+    unit: "°C",
+    definition: "The measure of how hot or cold the air is, based on the average energy of air molecules.",
+    standardHeight: "2 meters above ground",
+    instrument: "Thermometer / thermistor",
+    studentExplanation: "Measured at head height in a shaded, ventilated shelter so sunlight doesn't heat the sensor directly.",
+    advancedNote: "WMO standard observation height: 1.25-2.0m AGL (WMO-No. 8 guide)."
+  },
+  apparentTemperature: {
+    name: "Apparent Temperature (Feels Like)",
+    unit: "°C",
+    definition: "An estimate of how the temperature actually feels to the human body, accounting for humidity and wind.",
+    studentExplanation: "Feels like accounts for humidity and wind, so it can feel different from the actual air temperature.",
+    advancedNote: "Computed via a heat index or wind chill model depending on conditions."
+  },
+  humidity: {
+    name: "Relative Humidity",
+    unit: "%",
+    definition: "The amount of water vapor in the air, as a percentage of the maximum the air could hold at that temperature.",
+    studentExplanation: "Above 60% in Katsina's heat means sweat evaporates slower, so it feels hotter than the number alone suggests.",
+    advancedNote: "RH = (actual vapor pressure / saturation vapor pressure) x 100."
+  },
+  windSpeed: {
+    name: "Wind Speed",
+    unit: "km/h",
+    standardHeight: "10 meters above ground",
+    definition: "The speed at which air is moving horizontally.",
+    studentExplanation: "Measured 10 meters above ground — the international standard height for comparing wind readings anywhere in the world.",
+    advancedNote: "WMO standard anemometer height: 10m AGL over open terrain."
+  },
+  precipitation: {
+    name: "Precipitation",
+    unit: "mm",
+    definition: "The depth of liquid water that would accumulate on a flat surface from rain, in millimeters.",
+    studentExplanation: "1mm of rain = 1 liter of water per square meter of ground.",
+    advancedNote: "Measured via tipping-bucket or weighing rain gauge; 1mm = 1 L/m²."
+  },
+  pressure: {
+    name: "Surface Pressure",
+    unit: "hPa",
+    definition: "Atmospheric pressure at the station's elevation.",
+    studentExplanation: "Falling pressure often signals an approaching weather change.",
+    advancedNote: "Station-level pressure shown here, not reduced to sea level (not QNH)."
+  }
+};
+
+function getExplanation(key, tier) {
+  const entry = KNOWLEDGE_BASE[key];
+  if (!entry) return "";
+  if (tier === "student") {
+    return entry.studentExplanation || entry.definition || "";
+  }
+  return entry.advancedNote || entry.definition || "";
+}
+
+function getVariableInfo(key) {
+  return KNOWLEDGE_BASE[key] || null;
+}
+
+if (typeof module !== "undefined") {
+  module.exports = { KNOWLEDGE_BASE, getExplanation, getVariableInfo };
+}
+</script>
+<script>
+// ===== climate_math.js (inlined by build.js: edit the module file, not this copy) =====
+// Pure functions for the historical climate layer — no network, testable in isolation
+
+function parseNasaPowerSeries(paramObject) {
+  // paramObject looks like: {"20200101": 25.3, "20200102": 26.1, ...}
+  return Object.entries(paramObject).map(([dateStr, value]) => ({
+    date: dateStr,
+    year: parseInt(dateStr.substring(0, 4)),
+    value: value
+  })).filter(d => typeof d.value === 'number' && Number.isFinite(d.value) && d.value !== -999);
+  // NASA POWER uses -999 for missing data. Missing days are REMOVED, never turned into zeros:
+  // downstream code counts how many valid days each year really has.
+}
+
+const DEFAULT_MIN_COVERAGE = 0.95; // project choice (not a WMO standard): a year needs >= 95% valid days
+
+function daysInYear(year) {
+  return ((year % 4 === 0 && year % 100 !== 0) || year % 400 === 0) ? 366 : 365;
+}
+
+function aggregateAnnualRainfall(dailyPrecip) {
+  // dailyPrecip: array of {year, value} — sums to annual totals
+  // Output: [{year, total (mm, sum of VALID days only), validDays}]
+  const byYear = {};
+  for (const d of dailyPrecip) {
+    if (!byYear[d.year]) byYear[d.year] = { sum: 0, count: 0 };
+    byYear[d.year].sum += d.value;
+    byYear[d.year].count += 1;
+  }
+  return Object.entries(byYear)
+    .map(([year, agg]) => ({ year: parseInt(year), total: Math.round(agg.sum * 10) / 10, validDays: agg.count }))
+    .sort((a, b) => a.year - b.year);
+}
+
+function aggregateAnnualMeanTemp(dailyTemp) {
+  const byYear = {};
+  for (const d of dailyTemp) {
+    if (!byYear[d.year]) byYear[d.year] = { sum: 0, count: 0 };
+    byYear[d.year].sum += d.value;
+    byYear[d.year].count += 1;
+  }
+  return Object.entries(byYear)
+    .map(([year, agg]) => ({ year: parseInt(year), mean: Math.round((agg.sum / agg.count) * 10) / 10, validDays: agg.count }))
+    .sort((a, b) => a.year - b.year);
+}
+
+function selectCompleteYears(annualData, startYear, endYear, minCoverage = DEFAULT_MIN_COVERAGE) {
+  // Keeps only years with enough valid days (validDays / days in that year >= minCoverage).
+  // Every year from startYear to endYear is accounted for: a year with no data at all is
+  // reported as excluded with 0% coverage, never silently skipped.
+  // Returns { eligible: [item + expectedDays + coverage], excluded: [{year, validDays, expectedDays, coverage}], minCoverage }
+  const byYear = {};
+  for (const item of annualData) byYear[item.year] = item;
+  const eligible = [], excluded = [];
+  for (let year = startYear; year <= endYear; year++) {
+    const expectedDays = daysInYear(year);
+    const item = byYear[year];
+    const validDays = item ? item.validDays : 0;
+    const coverage = Math.round((validDays / expectedDays) * 1000) / 1000;
+    if (item && coverage >= minCoverage) eligible.push({ ...item, expectedDays, coverage });
+    else excluded.push({ year, validDays, expectedDays, coverage });
+  }
+  return { eligible, excluded, minCoverage };
+}
+
+function linearRegression(points) {
+  // points: array of {year, value} (value = total or mean, whichever series)
+  const n = points.length;
+  if (n < 2) return { slope: 0, intercept: 0, r2: 0 };
+
+  const xs = points.map(p => p.year);
+  const ys = points.map(p => p.value);
+  const meanX = xs.reduce((a, b) => a + b, 0) / n;
+  const meanY = ys.reduce((a, b) => a + b, 0) / n;
+
+  let num = 0, den = 0;
+  for (let i = 0; i < n; i++) {
+    num += (xs[i] - meanX) * (ys[i] - meanY);
+    den += (xs[i] - meanX) ** 2;
+  }
+  const slope = den === 0 ? 0 : num / den;
+  const intercept = meanY - slope * meanX;
+
+  // R-squared
+  let ssRes = 0, ssTot = 0;
+  for (let i = 0; i < n; i++) {
+    const predicted = slope * xs[i] + intercept;
+    ssRes += (ys[i] - predicted) ** 2;
+    ssTot += (ys[i] - meanY) ** 2;
+  }
+  const r2 = ssTot === 0 ? 0 : 1 - (ssRes / ssTot);
+
+  return { slope: Math.round(slope * 1000) / 1000, intercept: Math.round(intercept * 100) / 100, r2: Math.round(r2 * 1000) / 1000 };
+}
+
+function findExtremeYear(yearlyData, valueKey, mode) {
+  // mode: 'max' or 'min'. Returns null for an empty list (never throws).
+  if (!yearlyData || yearlyData.length === 0) return null;
+  return yearlyData.reduce((best, current) => {
+    if (mode === 'max') return current[valueKey] > best[valueKey] ? current : best;
+    return current[valueKey] < best[valueKey] ? current : best;
+  });
+}
+
+if (typeof module !== "undefined") module.exports = {
+  DEFAULT_MIN_COVERAGE,
+  daysInYear,
+  selectCompleteYears,
+  parseNasaPowerSeries,
+  aggregateAnnualRainfall,
+  aggregateAnnualMeanTemp,
+  linearRegression,
+  findExtremeYear
+};
+</script>
+<script>
+// ===== rainfall_onset.js (inlined by build.js: edit the module file, not this copy) =====
+// Rainfall onset detection and year-over-year variability analysis
+// Pure functions — no network, testable in isolation
+//
+// Method: Sivakumar (1988), Agricultural and Forest Meteorology 42(4):295-305, as described in
+// later West African studies. Onset = the first date, from 1 May, on which
+//   - at least 20 mm of rain falls over 3 consecutive days, AND
+//   - no dry sequence longer than 7 days occurs in the following 30 days
+//     (this filters out "false starts": early rain that does not sustain the season).
+// Implementation choices NOT fixed by the criterion (see docs/onset-method.md):
+//   - a dry day is a day under 1.0 mm
+//   - the onset date is the first wet day (>= 1.0 mm) of the triggering 3-day window
+//   - the 30-day check starts the day after the 3-day window
+//   - missing days are never treated as dry or wet (see detectOnsetDetailed)
+
+function dateStringToDayOfYear(dateStr) {
+  // dateStr format: "YYYYMMDD" (as returned by NASA POWER)
+  const year = parseInt(dateStr.substring(0, 4));
+  const month = parseInt(dateStr.substring(4, 6));
+  const day = parseInt(dateStr.substring(6, 8));
+  const date = Date.UTC(year, month - 1, day);
+  const startOfYear = Date.UTC(year, 0, 1);
+  return Math.round((date - startOfYear) / 86400000) + 1; // 1-indexed
+}
+
+function dayOfYearToDateString(year, dayOfYear) {
+  const date = new Date(Date.UTC(year, 0, 1));
+  date.setUTCDate(date.getUTCDate() + dayOfYear - 1);
+  const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(date.getUTCDate()).padStart(2, '0');
+  return `${date.getUTCFullYear()}-${mm}-${dd}`;
+}
+
+function groupDailyByYear(dailySeries) {
+  // dailySeries: output of parseNasaPowerSeries — [{date, year, value}]
+  const byYear = {};
+  for (const d of dailySeries) {
+    if (!byYear[d.year]) byYear[d.year] = [];
+    byYear[d.year].push({ dayOfYear: dateStringToDayOfYear(d.date), value: d.value });
+  }
+  for (const year in byYear) {
+    byYear[year].sort((a, b) => a.dayOfYear - b.dayOfYear);
+  }
+  return byYear;
+}
+
+function detectOnsetDetailed(yearDays, options = {}) {
+  // Returns { day, status } where status is:
+  //   'detected'          a valid onset was found and confirmed
+  //   'none'              the data are complete enough and no valid onset exists in this year
+  //   'insufficient_data' missing days stop us from confirming the answer
+  // Missing days (days absent from yearDays) are NEVER treated as dry or as zero rain.
+  const {
+    startDayOfYear = 121,     // 1 May in a non-leap year (computeOnsetDatesAllYears sets the exact day per year)
+    thresholdMM = 20,         // cumulative rain needed in window to trigger a candidate
+    windowDays = 3,
+    dryspellCheckDays = 30,   // how far ahead to check for a false start
+    maxDrySpellDays = 7,      // a dry sequence LONGER than this in the check window = false start
+    dryDayThreshold = 1.0     // mm below which a day counts as "dry"
+  } = options;
+
+  const valueByDay = {};
+  for (const d of yearDays) valueByDay[d.dayOfYear] = d.value;
+  const maxDay = yearDays.length ? yearDays[yearDays.length - 1].dayOfYear : 0;
+
+  let unknownWindowBefore = false; // a window with missing days that might have been the true onset
+
+  for (let start = startDayOfYear; start <= maxDay - windowDays + 1; start++) {
+    let windowSum = 0, missingInWindow = 0;
+    for (let k = 0; k < windowDays; k++) {
+      const v = valueByDay[start + k];
+      if (v === undefined) missingInWindow++; else windowSum += v;
+    }
+    if (windowSum < thresholdMM) {
+      // With missing days we cannot rule this window out as the true onset
+      if (missingInWindow > 0) unknownWindowBefore = true;
+      continue;
+    }
+    // windowSum is a lower bound, so reaching the threshold is certain even with missing days.
+
+    const checkStart = start + windowDays;
+    const checkEnd = checkStart + dryspellCheckDays - 1; // days past the data count as missing
+    let confirmedRun = 0, confirmedLongest = 0, possibleRun = 0, possibleLongest = 0;
+    for (let day = checkStart; day <= checkEnd; day++) {
+      const v = valueByDay[day];
+      const missing = v === undefined;
+      const dry = !missing && v < dryDayThreshold;
+      if (dry) { confirmedRun++; confirmedLongest = Math.max(confirmedLongest, confirmedRun); } else confirmedRun = 0;
+      if (dry || missing) { possibleRun++; possibleLongest = Math.max(possibleLongest, possibleRun); } else possibleRun = 0;
+    }
+    if (confirmedLongest > maxDrySpellDays) continue;           // confirmed false start
+    if (possibleLongest > maxDrySpellDays) return { day: null, status: 'insufficient_data' }; // cannot confirm
+    if (unknownWindowBefore) return { day: null, status: 'insufficient_data' };               // cannot confirm it is the first
+    // Onset date: the first wet day of the triggering window (a window can begin on a dry day)
+    let onsetDay = start;
+    for (let k = 0; k < windowDays; k++) {
+      const v = valueByDay[start + k];
+      if (v !== undefined && v >= dryDayThreshold) { onsetDay = start + k; break; }
+    }
+    return { day: onsetDay, status: 'detected' };
+  }
+  return { day: null, status: unknownWindowBefore ? 'insufficient_data' : 'none' };
+}
+
+function detectOnsetForYear(yearDays, options = {}) {
+  // Convenience wrapper: the onset day-of-year, or null if there is none / it cannot be confirmed.
+  return detectOnsetDetailed(yearDays, options).day;
+}
+
+function computeOnsetDatesAllYears(dailySeries, options = {}, years = null) {
+  // years (optional): every year in this list gets a result, even if it has no data at all.
+  const byYear = groupDailyByYear(dailySeries);
+  const yearList = years ? years : Object.keys(byYear).map(y => parseInt(y));
+  return yearList
+    .map(year => {
+      const days = byYear[year] || [];
+      const yearOptions = { ...options };
+      if (yearOptions.startDayOfYear === undefined) yearOptions.startDayOfYear = dateStringToDayOfYear(`${year}0501`); // 1 May, leap-safe
+      const detail = days.length ? detectOnsetDetailed(days, yearOptions) : { day: null, status: 'insufficient_data' };
+      return {
+        year,
+        onsetDayOfYear: detail.day,
+        onsetDate: detail.day ? dayOfYearToDateString(year, detail.day) : null,
+        status: detail.status
+      };
+    })
+    .sort((a, b) => a.year - b.year);
+}
+
+function coefficientOfVariation(values) {
+  const n = values.length;
+  if (n === 0) return { mean: 0, stdDev: 0, cv: 0 };
+  const mean = values.reduce((a, b) => a + b, 0) / n;
+  const variance = values.reduce((sum, v) => sum + (v - mean) ** 2, 0) / n;
+  const stdDev = Math.sqrt(variance);
+  const cv = mean === 0 ? 0 : (stdDev / mean) * 100;
+  return {
+    mean: Math.round(mean * 100) / 100,
+    stdDev: Math.round(stdDev * 100) / 100,
+    cv: Math.round(cv * 100) / 100
+  };
+}
+
+function onsetVariability(onsetResults) {
+  const validOnsets = onsetResults.filter(r => r.onsetDayOfYear !== null).map(r => r.onsetDayOfYear);
+  const stats = coefficientOfVariation(validOnsets);
+  const missingYears = onsetResults.filter(r => r.onsetDayOfYear === null).map(r => r.year);
+  const insufficientYears = onsetResults.filter(r => r.status === 'insufficient_data').map(r => r.year);
+  const noOnsetYears = onsetResults.filter(r => r.onsetDayOfYear === null && r.status !== 'insufficient_data').map(r => r.year);
+  return {
+    ...stats,
+    yearsWithValidOnset: validOnsets.length,
+    yearsTotal: onsetResults.length,
+    missingYears,        // all years without an onset, for any reason
+    insufficientYears,   // subset: missing data prevented a decision
+    noOnsetYears         // subset: data adequate, no valid onset found
+  };
+}
+
+if (typeof module !== "undefined") module.exports = {
+  dateStringToDayOfYear,
+  dayOfYearToDateString,
+  groupDailyByYear,
+  detectOnsetDetailed,
+  detectOnsetForYear,
+  computeOnsetDatesAllYears,
+  coefficientOfVariation,
+  onsetVariability
+};
+</script>
 <script>
 // Knowledge layer (KNOWLEDGE_BASE, getExplanation, getVariableInfo) lives in knowledge_layer.js
 

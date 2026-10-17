@@ -4,7 +4,7 @@ Where the project stands right now. Updated at the end of every milestone or ste
 (The README describes what the project is. This file says where we stopped.)
 
 **Last updated:** 17 Oct 2026
-**Current milestone:** 1, Scientific Core Stabilisation (in progress, steps 1 to 3 of 6 done)
+**Current milestone:** 1, Scientific Core Stabilisation (in progress, steps 1 to 3 of 6 done, plus a hotfix)
 **Last completed milestone:** 0, Repository Audit
 
 ## Done
@@ -29,14 +29,24 @@ Where the project stands right now. Updated at the end of every milestone or ste
 - Onset values will differ from earlier versions (intended).
 - Tests: 151 of 151 pass.
 
+### Hotfix after step 3: single-file app restored
+- Step 1 made `index.html` load the module files with `<script src>`. On the phone those files did not load and the page showed "getExplanation is not defined". Reproduced and fixed.
+- `index.src.html` is now the source; `build.js` inlines the modules into `index.html`, so the app is again one self-contained file that works however it is opened.
+- A test fails if `index.html` is out of date or depends on any external file except Chart.js.
+- Lesson: the page was only tested in a simulated browser with all files present. From now on it is also tested as the single file alone.
+- Tests: 160 of 160 pass.
+
 ## Known state of the app
-- Not yet tested in a real browser on a phone.
+- Needs a real-browser check on the phone after this hotfix (live view, three views, Load Data).
 - Historical results are still experimental: no significance testing yet.
 
 ## Next up: Milestone 1, remaining steps
 4. Mann-Kendall and Sen's slope with p-value; honest wording; replace the onset percentage (S1, S4)
 5. Remaining edge cases (B8, B9)
 6. Cross-check against an independent Python (SciPy) calculation
+
+## Changing code from now on
+Edit `index.src.html` or a module, run `node build.js`, then `node run_tests.js`.
 
 ## How to update this file
 At the end of each milestone or step: move it to "Done", update "Next up", and

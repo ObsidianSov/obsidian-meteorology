@@ -26,11 +26,18 @@ treat the historical numbers as exploratory, not as research results.
 
 ## Files
 
-- `index.html`: the application (interface, API calls, charts)
-- `climate_math.js`, `rainfall_onset.js`, `knowledge_layer.js`: scientific modules
-- `test_*.js`: unit tests, one per module
-- `run_tests.js`: runs all tests
-- `docs/`: audit and project documentation
+- `index.html`: the app, a single self-contained file (open it any way you like). **Generated: never edit it directly.**
+- `index.src.html`: the source of the page (interface, API calls, charts)
+- `climate_math.js`, `rainfall_onset.js`, `knowledge_layer.js`: scientific modules (one copy each, tested)
+- `build.js`: combines `index.src.html` and the modules into `index.html`
+- `test_*.js`: unit tests; `run_tests.js` runs all of them
+- `docs/`: audit, method notes and project status
+
+## Working on the code
+
+1. Edit `index.src.html` or a module file.
+2. Run `node build.js` to regenerate `index.html`.
+3. Run `node run_tests.js`. One test fails if `index.html` is out of date.
 
 ## Run the tests
 
