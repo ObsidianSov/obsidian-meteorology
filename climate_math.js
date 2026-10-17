@@ -6,17 +6,28 @@ function parseNasaPowerSeries(paramObject) {
     date: dateStr,
     year: parseInt(dateStr.substring(0, 4)),
     value: value
-  })).filter(d => d.value !== -999); // NASA POWER uses -999 for missing data
+  })).filter(d => typeof d.value === 'number' && Number.isFinite(d.value) && d.value !== -999);
+  // NASA POWER uses -999 for missing data. Missing days are REMOVED, never turned into zeros:
+  // downstream code counts how many valid days each year really has.
+}
+
+const DEFAULT_MIN_COVERAGE = 0.95; // project choice (not a WMO standard): a year needs >= 95% valid days
+
+function daysInYear(year) {
+  return ((year % 4 === 0 && year % 100 !== 0) || year % 400 === 0) ? 366 : 365;
 }
 
 function aggregateAnnualRainfall(dailyPrecip) {
   // dailyPrecip: array of {year, value} — sums to annual totals
+  // Output: [{year, total (mm, sum of VALID days only), validDays}]
   const byYear = {};
   for (const d of dailyPrecip) {
-    byYear[d.year] = (byYear[d.year] || 0) + d.value;
+    if (!byYear[d.year]) byYear[d.year] = { sum: 0, count: 0 };
+    byYear[d.year].sum += d.value;
+    byYear[d.year].count += 1;
   }
   return Object.entries(byYear)
-    .map(([year, total]) => ({ year: parseInt(year), total: Math.round(total * 10) / 10 }))
+    .map(([year, agg]) => ({ year: parseInt(year), total: Math.round(agg.sum * 10) / 10, validDays: agg.count }))
     .sort((a, b) => a.year - b.year);
 }
 
@@ -28,8 +39,27 @@ function aggregateAnnualMeanTemp(dailyTemp) {
     byYear[d.year].count += 1;
   }
   return Object.entries(byYear)
-    .map(([year, agg]) => ({ year: parseInt(year), mean: Math.round((agg.sum / agg.count) * 10) / 10 }))
+    .map(([year, agg]) => ({ year: parseInt(year), mean: Math.round((agg.sum / agg.count) * 10) / 10, validDays: agg.count }))
     .sort((a, b) => a.year - b.year);
+}
+
+function selectCompleteYears(annualData, startYear, endYear, minCoverage = DEFAULT_MIN_COVERAGE) {
+  // Keeps only years with enough valid days (validDays / days in that year >= minCoverage).
+  // Every year from startYear to endYear is accounted for: a year with no data at all is
+  // reported as excluded with 0% coverage, never silently skipped.
+  // Returns { eligible: [item + expectedDays + coverage], excluded: [{year, validDays, expectedDays, coverage}], minCoverage }
+  const byYear = {};
+  for (const item of annualData) byYear[item.year] = item;
+  const eligible = [], excluded = [];
+  for (let year = startYear; year <= endYear; year++) {
+    const expectedDays = daysInYear(year);
+    const item = byYear[year];
+    const validDays = item ? item.validDays : 0;
+    const coverage = Math.round((validDays / expectedDays) * 1000) / 1000;
+    if (item && coverage >= minCoverage) eligible.push({ ...item, expectedDays, coverage });
+    else excluded.push({ year, validDays, expectedDays, coverage });
+  }
+  return { eligible, excluded, minCoverage };
 }
 
 function linearRegression(points) {
@@ -63,7 +93,8 @@ function linearRegression(points) {
 }
 
 function findExtremeYear(yearlyData, valueKey, mode) {
-  // mode: 'max' or 'min'
+  // mode: 'max' or 'min'. Returns null for an empty list (never throws).
+  if (!yearlyData || yearlyData.length === 0) return null;
   return yearlyData.reduce((best, current) => {
     if (mode === 'max') return current[valueKey] > best[valueKey] ? current : best;
     return current[valueKey] < best[valueKey] ? current : best;
@@ -71,6 +102,9 @@ function findExtremeYear(yearlyData, valueKey, mode) {
 }
 
 if (typeof module !== "undefined") module.exports = {
+  DEFAULT_MIN_COVERAGE,
+  daysInYear,
+  selectCompleteYears,
   parseNasaPowerSeries,
   aggregateAnnualRainfall,
   aggregateAnnualMeanTemp,

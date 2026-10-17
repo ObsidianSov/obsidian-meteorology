@@ -445,8 +445,17 @@ async function loadHistorical() {
     const dailyTemp = parseNasaPowerSeries(rawTemp);
     const dailyPrecip = parseNasaPowerSeries(rawPrecip);
 
-    const annualRain = aggregateAnnualRainfall(dailyPrecip);
-    const annualTemp = aggregateAnnualMeanTemp(dailyTemp);
+    const startY = parseInt(startYear), endY = parseInt(endYear);
+    if (!(startY <= endY)) throw new Error("the start year must not be after the end year");
+
+    // Only years with enough valid days are used. Missing days are never filled with zeros.
+    const rainSel = selectCompleteYears(aggregateAnnualRainfall(dailyPrecip), startY, endY);
+    const tempSel = selectCompleteYears(aggregateAnnualMeanTemp(dailyTemp), startY, endY);
+    const annualRain = rainSel.eligible;
+    const annualTemp = tempSel.eligible;
+    if (annualRain.length < 3 || annualTemp.length < 3) {
+      throw new Error(`fewer than 3 years have enough valid data (rainfall ${annualRain.length}, temperature ${annualTemp.length}) — choose a different year range`);
+    }
 
     const rainTrend = linearRegression(annualRain.map(y => ({ year: y.year, value: y.total })));
     const tempTrend = linearRegression(annualTemp.map(y => ({ year: y.year, value: y.mean })));
@@ -456,7 +465,9 @@ async function loadHistorical() {
     const hottestYear = findExtremeYear(annualTemp, 'mean', 'max');
     const coldestYear = findExtremeYear(annualTemp, 'mean', 'min');
 
-    const onsetResults = computeOnsetDatesAllYears(dailyPrecip);
+    const yearsInRange = [];
+    for (let y = startY; y <= endY; y++) yearsInRange.push(y);
+    const onsetResults = computeOnsetDatesAllYears(dailyPrecip, {}, yearsInRange);
     const onsetStats = onsetVariability(onsetResults);
     const validOnsetPoints = onsetResults
       .filter(r => r.onsetDayOfYear !== null)
@@ -465,7 +476,7 @@ async function loadHistorical() {
 
     renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
                       wettestYear, driestYear, hottestYear, coldestYear,
-                      onsetResults, onsetStats, onsetTrend);
+                      onsetResults, onsetStats, onsetTrend, rainSel, tempSel);
 
   } catch (err) {
     resultsDiv.innerHTML = `<div class="error">
@@ -477,8 +488,27 @@ async function loadHistorical() {
 
 function renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
                            wettestYear, driestYear, hottestYear, coldestYear,
-                           onsetResults, onsetStats, onsetTrend) {
+                           onsetResults, onsetStats, onsetTrend, rainSel, tempSel) {
   const resultsDiv = document.getElementById("historical-results");
+
+  const describeExcluded = (sel) => sel.excluded.length
+    ? sel.excluded.map(e => `${e.year} (${Math.round(e.coverage * 100)}% of days)`).join(", ")
+    : "none";
+  const minPct = Math.round(rainSel.minCoverage * 100);
+  const completenessCard = `
+    <div class="card" style="margin-bottom:14px;">
+      <div class="card-label">Data completeness</div>
+      <div class="explain">
+        Rainfall: <strong>${rainSel.eligible.length}</strong> of ${rainSel.eligible.length + rainSel.excluded.length} years used
+        (a year needs at least ${minPct}% valid days). Left out: ${describeExcluded(rainSel)}.<br>
+        Temperature: <strong>${tempSel.eligible.length}</strong> of ${tempSel.eligible.length + tempSel.excluded.length} years used.
+        Left out: ${describeExcluded(tempSel)}.<br>
+        Missing days are never replaced by zeros; years with too many missing days are left out of totals, trends and records.
+      </div>
+    </div>`;
+  const insufficientNote = onsetStats.insufficientYears.length
+    ? `${onsetStats.insufficientYears.length} year(s) (${onsetStats.insufficientYears.join(", ")}) had too much missing data to decide the onset.`
+    : "";
 
   const rainDirection = rainTrend.slope > 0 ? "increasing" : rainTrend.slope < 0 ? "decreasing" : "flat";
   const tempDirection = tempTrend.slope > 0 ? "warming" : tempTrend.slope < 0 ? "cooling" : "flat";
@@ -515,7 +545,8 @@ function renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
         about <strong>${onsetStats.cv}%</strong> — the higher this number, the less
         predictable planting timing has been.
       ` : `No reliable rainy season onset could be detected in this year range from this dataset.`}
-    </div>`;
+    </div>
+    ${insufficientNote ? `<div class="explain">${insufficientNote}</div>` : ""}`;
 
   let advancedSummary = `
     <table class="advanced-table">
@@ -530,11 +561,12 @@ function renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
       <tr><td>Onset trend</td><td>${onsetTrend.slope} days/year (${onsetDirection}), R²=${onsetTrend.r2}</td></tr>
       <tr><td>Mean onset day-of-year</td><td>${onsetStats.mean || 'n/a'} (std dev ${onsetStats.stdDev || 'n/a'} days)</td></tr>
       <tr><td>Onset variability (CV)</td><td>${onsetStats.cv || 'n/a'}%</td></tr>
-      <tr><td>Years with detected onset</td><td>${onsetStats.yearsWithValidOnset} / ${onsetStats.yearsTotal}${onsetStats.missingYears.length ? ` (missing: ${onsetStats.missingYears.join(', ')})` : ''}</td></tr>
+      <tr><td>Years with detected onset</td><td>${onsetStats.yearsWithValidOnset} / ${onsetStats.yearsTotal}${onsetStats.noOnsetYears.length ? ` (no onset: ${onsetStats.noOnsetYears.join(', ')})` : ''}${onsetStats.insufficientYears.length ? ` (insufficient data: ${onsetStats.insufficientYears.join(', ')})` : ''}</td></tr>
       <tr><td>Earliest / Latest onset</td><td>${earliestOnset ? earliestOnset.onsetDate : 'n/a'} / ${latestOnset ? latestOnset.onsetDate : 'n/a'}</td></tr>
     </table>`;
 
   resultsDiv.innerHTML = `
+    ${completenessCard}
     <div class="card" style="margin-bottom:14px;">
       <div class="card-label">Summary (${currentTier} view)</div>
       ${currentTier === 'student' ? studentSummary : advancedSummary}

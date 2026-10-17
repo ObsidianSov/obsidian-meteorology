@@ -37,7 +37,12 @@ function groupDailyByYear(dailySeries) {
   return byYear;
 }
 
-function detectOnsetForYear(yearDays, options = {}) {
+function detectOnsetDetailed(yearDays, options = {}) {
+  // Returns { day, status } where status is:
+  //   'detected'          a valid onset was found and confirmed
+  //   'none'              the data are complete enough and no valid onset exists in this year
+  //   'insufficient_data' missing days stop us from confirming the answer
+  // Missing days (days absent from yearDays) are NEVER treated as dry or as zero rain.
   const {
     startDayOfYear = 60,      // ~March 1 — earliest plausible search start
     thresholdMM = 20,         // cumulative rain needed in window to trigger a candidate
@@ -51,40 +56,57 @@ function detectOnsetForYear(yearDays, options = {}) {
   for (const d of yearDays) valueByDay[d.dayOfYear] = d.value;
   const maxDay = yearDays.length ? yearDays[yearDays.length - 1].dayOfYear : 0;
 
+  let unknownWindowBefore = false; // a window with missing days that might have been the true onset
+
   for (let start = startDayOfYear; start <= maxDay - windowDays + 1; start++) {
-    let windowSum = 0;
-    for (let k = 0; k < windowDays; k++) windowSum += valueByDay[start + k] || 0;
-    if (windowSum < thresholdMM) continue;
+    let windowSum = 0, missingInWindow = 0;
+    for (let k = 0; k < windowDays; k++) {
+      const v = valueByDay[start + k];
+      if (v === undefined) missingInWindow++; else windowSum += v;
+    }
+    if (windowSum < thresholdMM) {
+      // With missing days we cannot rule this window out as the true onset
+      if (missingInWindow > 0) unknownWindowBefore = true;
+      continue;
+    }
+    // windowSum is a lower bound, so reaching the threshold is certain even with missing days.
 
     const checkStart = start + windowDays;
-    const checkEnd = Math.min(checkStart + dryspellCheckDays - 1, maxDay);
-    let longestDry = 0, currentDry = 0;
+    const checkEnd = checkStart + dryspellCheckDays - 1; // days past the data count as missing
+    let confirmedRun = 0, confirmedLongest = 0, possibleRun = 0, possibleLongest = 0;
     for (let day = checkStart; day <= checkEnd; day++) {
-      const v = valueByDay[day] || 0;
-      if (v < dryDayThreshold) {
-        currentDry++;
-        longestDry = Math.max(longestDry, currentDry);
-      } else {
-        currentDry = 0;
-      }
+      const v = valueByDay[day];
+      const missing = v === undefined;
+      const dry = !missing && v < dryDayThreshold;
+      if (dry) { confirmedRun++; confirmedLongest = Math.max(confirmedLongest, confirmedRun); } else confirmedRun = 0;
+      if (dry || missing) { possibleRun++; possibleLongest = Math.max(possibleLongest, possibleRun); } else possibleRun = 0;
     }
-    if (longestDry <= maxDrySpellDays) {
-      return start; // valid onset day-of-year
-    }
+    if (confirmedLongest > maxDrySpellDays) continue;           // confirmed false start
+    if (possibleLongest > maxDrySpellDays) return { day: null, status: 'insufficient_data' }; // cannot confirm
+    if (unknownWindowBefore) return { day: null, status: 'insufficient_data' };               // cannot confirm it is the first
+    return { day: start, status: 'detected' };
   }
-  return null; // no valid onset found in this year's data
+  return { day: null, status: unknownWindowBefore ? 'insufficient_data' : 'none' };
 }
 
-function computeOnsetDatesAllYears(dailySeries, options = {}) {
+function detectOnsetForYear(yearDays, options = {}) {
+  // Convenience wrapper: the onset day-of-year, or null if there is none / it cannot be confirmed.
+  return detectOnsetDetailed(yearDays, options).day;
+}
+
+function computeOnsetDatesAllYears(dailySeries, options = {}, years = null) {
+  // years (optional): every year in this list gets a result, even if it has no data at all.
   const byYear = groupDailyByYear(dailySeries);
-  return Object.keys(byYear)
-    .map(yearStr => {
-      const year = parseInt(yearStr);
-      const onsetDay = detectOnsetForYear(byYear[year], options);
+  const yearList = years ? years : Object.keys(byYear).map(y => parseInt(y));
+  return yearList
+    .map(year => {
+      const days = byYear[year] || [];
+      const detail = days.length ? detectOnsetDetailed(days, options) : { day: null, status: 'insufficient_data' };
       return {
         year,
-        onsetDayOfYear: onsetDay,
-        onsetDate: onsetDay ? dayOfYearToDateString(year, onsetDay) : null
+        onsetDayOfYear: detail.day,
+        onsetDate: detail.day ? dayOfYearToDateString(year, detail.day) : null,
+        status: detail.status
       };
     })
     .sort((a, b) => a.year - b.year);
@@ -108,11 +130,15 @@ function onsetVariability(onsetResults) {
   const validOnsets = onsetResults.filter(r => r.onsetDayOfYear !== null).map(r => r.onsetDayOfYear);
   const stats = coefficientOfVariation(validOnsets);
   const missingYears = onsetResults.filter(r => r.onsetDayOfYear === null).map(r => r.year);
+  const insufficientYears = onsetResults.filter(r => r.status === 'insufficient_data').map(r => r.year);
+  const noOnsetYears = onsetResults.filter(r => r.onsetDayOfYear === null && r.status !== 'insufficient_data').map(r => r.year);
   return {
     ...stats,
     yearsWithValidOnset: validOnsets.length,
     yearsTotal: onsetResults.length,
-    missingYears
+    missingYears,        // all years without an onset, for any reason
+    insufficientYears,   // subset: missing data prevented a decision
+    noOnsetYears         // subset: data adequate, no valid onset found
   };
 }
 
@@ -120,6 +146,7 @@ if (typeof module !== "undefined") module.exports = {
   dateStringToDayOfYear,
   dayOfYearToDateString,
   groupDailyByYear,
+  detectOnsetDetailed,
   detectOnsetForYear,
   computeOnsetDatesAllYears,
   coefficientOfVariation,
