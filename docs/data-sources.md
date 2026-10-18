@@ -36,6 +36,16 @@ Audit of every data provider the app uses (Milestone 3). The machine-readable ve
   two sources disagree strongly. If it cannot run, the page says so: the NASA results are shown but marked
   as not cross-checked.
 
+## Live weather view (Milestone 3, step 3)
+
+- Every number in the live view is a weather-model value, not a station reading. The page says so in a
+  "Data source" card with the model time and the time it was fetched. The NiMET view no longer says
+  "Station Reading" or "Measured at 10 m"; precipitation is labelled "latest model interval, not a
+  24-hour total", and the Student card "Rain expected today" shows the model's daily total.
+- The answer is checked before use (errors, units, missing parts). A missing value shows as "n/a" and the
+  card counts how many were missing: it is never shown as 0 and never crashes the page.
+- A forecast with fewer than 7 days shows the days it has.
+
 ## Known problems
 
 - **Found 18 Oct 2026:** NASA POWER rainfall for Katsina is 983 to 1,785 mm a year in 2020 to 2024;

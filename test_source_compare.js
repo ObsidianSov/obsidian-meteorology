@@ -1,4 +1,4 @@
-const { pearson, spearman, ranks, buildComparison, describeComparison, COMPARE_FENCE_K } = require('./source_compare.js');
+const { pearson, spearman, ranks, buildComparison, describeComparison, describeDispute, COMPARE_FENCE_K } = require('./source_compare.js');
 
 let passed = 0, total = 0;
 function check(name, condition) {
@@ -48,6 +48,21 @@ check("fewer than 10 common years: 'too_few', nothing claimed", (() => { const c
 check("no common years does not crash", buildComparison([], []).verdict === "too_few" && buildComparison(toSeries([2000], [1]), toSeries([2005], [1])).n === 0);
 check("the input series are not changed", (() => { const a = toSeries(FX.agree.years, FX.agree.nasa); const copy = JSON.stringify(a); buildComparison(a, toSeries(FX.agree.years, FX.agree.era)); return JSON.stringify(a) === copy; })());
 check("a source that is higher on average is named in the bias sentence", /On average NASA POWER is [\d.]+ mm higher per year|On average ERA5 is [\d.]+ mm higher per year/.test(agreeText));
+
+
+// ---- the note shown under a headline trend when the second source disagrees ----
+const names = { label: "annual rainfall", nameA: "NASA POWER", nameB: "ERA5" };
+const dispute = describeDispute(jump, names);
+check("dispute: shown when the sources disagree AND reach different trend verdicts", /^Disputed: ERA5 shows no significant trend for the same years/.test(dispute));
+check("dispute: names the years where the sources disagree", dispute.includes("2020, 2021, 2022, 2023, 2024"));
+check("dispute: tells the reader not to rely on the trend above", /Do not rely on the annual rainfall trend above yet/.test(dispute));
+check("dispute: empty when the sources agree", describeDispute(agree, names) === "");
+check("dispute: empty when there is nothing to compare", describeDispute(null, names) === "" && describeDispute(buildComparison([], []), names) === "");
+check("dispute: empty when the sources disagree in some years but reach the same verdict", (() => {
+  const c = { ...jump, trendA: { verdict: "none" }, trendB: { verdict: "none" } };
+  return describeDispute(c, names) === "";
+})());
+check("dispute: works the other way round (A no trend, B increasing)", /ERA5 shows a significant increasing trend/.test(describeDispute({ ...jump, trendA: { verdict: "none" }, trendB: { verdict: "increasing" } }, names)));
 
 console.log(`\nRESULTS: ${passed}/${total} tests passed`);
 process.exit(passed === total ? 0 : 1);

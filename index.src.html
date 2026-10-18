@@ -214,6 +214,7 @@
 <script src="knowledge_layer.js"></script>
 <script src="climate_math.js"></script>
 <script src="trend_stats.js"></script>
+<script src="display_format.js"></script>
 <script src="cache_store.js"></script>
 <script src="request_tools.js"></script>
 <script src="data_sources.js"></script>
@@ -248,7 +249,9 @@ async function loadWeather(lat, lon) {
       label: "Open-Meteo", timeoutMs: 20000,
       onRetry: (n) => { content.innerHTML = `<div class="status">Open-Meteo did not answer properly. Trying again (${n} of 2)...</div>`; }
     });
-    latestData = data;
+    const live = readLiveResponse(data);
+    if (!live.ok) throw new Error(live.error);
+    latestData = { current: live.current, daily: live.daily, missingCount: live.missingCount, fetchedAt: new Date() };
     render();
   } catch (err) {
     content.innerHTML = `<div class="error">
@@ -266,50 +269,74 @@ function render() {
   else renderNimet();
 }
 
+function liveSourceCard() {
+  // Says what the numbers are: model values, for which time, fetched when. Never "station readings".
+  const d = latestData;
+  const src = DATA_SOURCES.open_meteo_forecast;
+  return `
+    <div class="card" style="margin-bottom:14px;">
+      <div class="card-label">Data source</div>
+      <div class="explain">
+        ${src.name}: ${src.typeLabel}. Values for ${d.current.time || "the latest model time"} (Lagos time),
+        fetched ${d.fetchedAt.toLocaleTimeString()}.
+        ${d.missingCount ? `<strong>${d.missingCount} value${d.missingCount === 1 ? " was" : "s were"} not provided by the service and show${d.missingCount === 1 ? "s" : ""} as n/a.</strong>` : ""}
+      </div>
+    </div>`;
+}
+
+function conditionText(code, unknownText) {
+  if (code === null) return unknownText;
+  return WEATHER_CODES[code] || unknownText;
+}
+
 function renderStudent() {
   const d = latestData;
   const c = d.current;
   const daily = d.daily;
-  const code = WEATHER_CODES[c.weather_code] || "Unknown conditions";
+  const code = conditionText(c.weather_code, "Conditions not available");
+  const nDays = Math.min(7, daily.time.length);
 
   let forecastHtml = "";
-  for (let i = 0; i < 7; i++) {
+  for (let i = 0; i < nDays; i++) {
     const date = new Date(daily.time[i]);
     const dayName = date.toLocaleDateString('en-US', { weekday: 'short' });
     forecastHtml += `
       <div class="day-card">
         <div class="day-name">${dayName}</div>
-        <div class="day-temp">${Math.round(daily.temperature_2m_max[i])}°/${Math.round(daily.temperature_2m_min[i])}°</div>
-        <div class="day-rain">${daily.precipitation_sum[i].toFixed(1)}mm</div>
+        <div class="day-temp">${fmt(daily.temperature_2m_max[i], 0, "°")}/${fmt(daily.temperature_2m_min[i], 0, "°")}</div>
+        <div class="day-rain">${fmt(daily.precipitation_sum[i], 1, "mm")}</div>
       </div>`;
   }
+  if (nDays === 0) forecastHtml = '<div class="explain">No forecast days were provided.</div>';
 
   document.getElementById("content").innerHTML = `
+    ${liveSourceCard()}
     <div class="grid">
       <div class="card">
-        <div class="card-label">Right now</div>
-        <div class="card-value">${Math.round(c.temperature_2m)}°C</div>
+        <div class="card-label">Right now (model estimate)</div>
+        <div class="card-value">${fmt(c.temperature_2m, 0, "°C")}</div>
         <div class="card-sub">${code}</div>
-        <div class="explain">Feels like ${Math.round(c.apparent_temperature)}°C — ${getExplanation('apparentTemperature', 'student')}</div>
+        <div class="explain">Feels like ${fmt(c.apparent_temperature, 0, "°C")} — ${getExplanation('apparentTemperature', 'student')}</div>
       </div>
       <div class="card">
         <div class="card-label">Humidity</div>
-        <div class="card-value">${c.relative_humidity_2m}%</div>
+        <div class="card-value">${fmt(c.relative_humidity_2m, 0, "%")}</div>
         <div class="explain">${getExplanation('humidity', 'student')}</div>
       </div>
       <div class="card">
         <div class="card-label">Wind</div>
-        <div class="card-value">${Math.round(c.wind_speed_10m)}<span style="font-size:1rem"> km/h</span></div>
+        <div class="card-value">${fmt(c.wind_speed_10m, 0, " km/h")}</div>
         <div class="explain">${getExplanation('windSpeed', 'student')}</div>
       </div>
       <div class="card">
-        <div class="card-label">Rain today</div>
-        <div class="card-value">${c.precipitation.toFixed(1)}<span style="font-size:1rem"> mm</span></div>
+        <div class="card-label">Rain expected today</div>
+        <div class="card-value">${fmt(daily.precipitation_sum[0], 1, " mm")}</div>
+        <div class="card-sub">Model forecast total for the day</div>
         <div class="explain">${getExplanation('precipitation', 'student')}</div>
       </div>
     </div>
     <div class="card">
-      <div class="card-label">7-Day Outlook</div>
+      <div class="card-label">7-Day Outlook (forecast)</div>
       <div class="forecast-row">${forecastHtml}</div>
     </div>
   `;
@@ -321,39 +348,41 @@ function renderAdvanced() {
   const daily = d.daily;
 
   let rows = "";
-  for (let i = 0; i < 7; i++) {
+  for (let i = 0; i < Math.min(7, daily.time.length); i++) {
+    const code = daily.weather_code[i];
     rows += `<tr>
       <td>${daily.time[i]}</td>
-      <td>${daily.temperature_2m_max[i]}</td>
-      <td>${daily.temperature_2m_min[i]}</td>
-      <td>${daily.precipitation_sum[i]}</td>
-      <td>${daily.wind_speed_10m_max[i]}</td>
-      <td>${daily.uv_index_max[i]}</td>
-      <td>${WEATHER_CODES[daily.weather_code[i]] || daily.weather_code[i]}</td>
+      <td>${showRaw(daily.temperature_2m_max[i])}</td>
+      <td>${showRaw(daily.temperature_2m_min[i])}</td>
+      <td>${showRaw(daily.precipitation_sum[i])}</td>
+      <td>${showRaw(daily.wind_speed_10m_max[i])}</td>
+      <td>${showRaw(daily.uv_index_max[i])}</td>
+      <td>${code === null ? "n/a" : (WEATHER_CODES[code] || code)}</td>
     </tr>`;
   }
 
   document.getElementById("content").innerHTML = `
+    ${liveSourceCard()}
     <div class="grid">
       <div class="card">
         <div class="card-label">temperature_2m</div>
-        <div class="card-value">${c.temperature_2m}°C</div>
+        <div class="card-value">${fmt(c.temperature_2m, 1, "°C")}</div>
       </div>
       <div class="card">
         <div class="card-label">apparent_temperature</div>
-        <div class="card-value">${c.apparent_temperature}°C</div>
+        <div class="card-value">${fmt(c.apparent_temperature, 1, "°C")}</div>
       </div>
       <div class="card">
         <div class="card-label">relative_humidity_2m</div>
-        <div class="card-value">${c.relative_humidity_2m}%</div>
+        <div class="card-value">${fmt(c.relative_humidity_2m, 0, "%")}</div>
       </div>
       <div class="card">
         <div class="card-label">surface_pressure</div>
-        <div class="card-value">${c.surface_pressure}<span style="font-size:1rem"> hPa</span></div>
+        <div class="card-value">${fmt(c.surface_pressure, 1, " hPa")}</div>
       </div>
     </div>
     <div class="card">
-      <div class="card-label">Daily aggregates (raw)</div>
+      <div class="card-label">Daily aggregates (raw model forecast)</div>
       <table class="advanced-table">
         <tr><th>Date</th><th>T-max °C</th><th>T-min °C</th><th>Precip mm</th><th>Wind max km/h</th><th>UV max</th><th>Code</th></tr>
         ${rows}
@@ -366,37 +395,39 @@ function renderNimet() {
   const d = latestData;
   const c = d.current;
   const daily = d.daily;
-  const code = WEATHER_CODES[c.weather_code] || "N/A";
+  const code = conditionText(c.weather_code, "N/A");
 
   document.getElementById("content").innerHTML = `
+    ${liveSourceCard()}
     <div class="grid">
       <div class="card">
-        <div class="card-label">Station Reading — Current</div>
-        <div class="card-value">${c.temperature_2m}°C</div>
-        <div class="card-sub">Condition: ${code} | Pressure: ${c.surface_pressure} hPa</div>
+        <div class="card-label">Model value — Current (not a station reading)</div>
+        <div class="card-value">${fmt(c.temperature_2m, 1, "°C")}</div>
+        <div class="card-sub">Condition: ${code} | Pressure: ${fmt(c.surface_pressure, 1, " hPa")}</div>
       </div>
       <div class="card">
-        <div class="card-label">Wind Vector</div>
-        <div class="card-value">${c.wind_speed_10m} km/h</div>
-        <div class="card-sub">Measured at 10m AGL</div>
+        <div class="card-label">Wind (model, 10 m above ground)</div>
+        <div class="card-value">${fmt(c.wind_speed_10m, 1, " km/h")}</div>
+        <div class="card-sub">Model estimate at 10 m, not an anemometer reading</div>
       </div>
       <div class="card">
-        <div class="card-label">Precipitation (24h)</div>
-        <div class="card-value">${c.precipitation} mm</div>
+        <div class="card-label">Precipitation (latest model interval)</div>
+        <div class="card-value">${fmt(c.precipitation, 1, " mm")}</div>
+        <div class="card-sub">Not a 24-hour total</div>
       </div>
       <div class="card">
         <div class="card-label">Relative Humidity</div>
-        <div class="card-value">${c.relative_humidity_2m}%</div>
+        <div class="card-value">${fmt(c.relative_humidity_2m, 0, "%")}</div>
       </div>
     </div>
     <div class="card">
-      <div class="card-label">7-Day Synoptic Summary</div>
+      <div class="card-label">7-Day Synoptic Summary (model forecast)</div>
       <table class="advanced-table">
         <tr><th>Date</th><th>Tmax</th><th>Tmin</th><th>Precip Sum</th><th>Max Wind</th><th>UV Index</th></tr>
-        ${daily.time.map((t,i) => `<tr>
-          <td>${t}</td><td>${daily.temperature_2m_max[i]}°C</td><td>${daily.temperature_2m_min[i]}°C</td>
-          <td>${daily.precipitation_sum[i]}mm</td><td>${daily.wind_speed_10m_max[i]}km/h</td>
-          <td>${daily.uv_index_max[i]}</td>
+        ${daily.time.slice(0, 7).map((t, i) => `<tr>
+          <td>${t}</td><td>${fmt(daily.temperature_2m_max[i], 1, "°C")}</td><td>${fmt(daily.temperature_2m_min[i], 1, "°C")}</td>
+          <td>${fmt(daily.precipitation_sum[i], 1, "mm")}</td><td>${fmt(daily.wind_speed_10m_max[i], 1, "km/h")}</td>
+          <td>${fmt(daily.uv_index_max[i], 1)}</td>
         </tr>`).join("")}
       </table>
     </div>
@@ -562,7 +593,7 @@ function renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
       <div class="explain">
         Historical values are ${DATA_SOURCES.nasa_power.name} daily estimates for the chosen coordinates
         (${retrievedText}).
-        ${DATA_SOURCES.nasa_power.typeLabel}. ${DATA_SOURCES.nasa_power.origin} Trends use the Mann-Kendall test with
+        ${DATA_SOURCES.nasa_power.typeLabel.replace(" for the chosen coordinates", "")}. ${DATA_SOURCES.nasa_power.origin} Trends use the Mann-Kendall test with
         Sen's slope at the 5% level, and a trend is only reported when the test supports it and at least
         ${MIN_YEARS_FOR_TREND} years are usable.
       </div>
@@ -614,12 +645,14 @@ function renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
       (${driestYear.total} mm).
     </div>
     ${sensBlock(rainSensText)}
+    <div id="rainDispute"></div>
     <div class="explain">
       ${describeTrend(tempTrend, { label: "annual mean temperature", unit: "°C", digits: 3, upPhrase: "warming trend", downPhrase: "cooling trend" })}
       The hottest year on average was <strong>${hottestYear.year}</strong> (${hottestYear.mean}°C),
       the coolest was <strong>${coldestYear.year}</strong> (${coldestYear.mean}°C).
     </div>
     ${sensBlock(tempSensText)}
+    <div id="tempDispute"></div>
     <div class="explain">
       ${validOnsetResults.length > 0 ? `
         The rainy season onset was detected in <strong>${onsetStats.yearsWithValidOnset}</strong>
@@ -815,6 +848,14 @@ function updateCrossCheckBanner() {
   const plural = (n) => `${n} year${n === 1 ? "" : "s"}`;
   if (c && c.rainCmp.verdict === "diverge") parts.push(`rainfall: NASA POWER and ERA5 disagree strongly in ${plural(c.rainCmp.flagged.length)} (${c.rainCmp.flagged.join(", ")})`);
   if (c && c.tempCmp.verdict === "diverge") parts.push(`temperature: NASA POWER and ERA5 disagree strongly in ${plural(c.tempCmp.flagged.length)} (${c.tempCmp.flagged.join(", ")})`);
+  const names = { nameA: "NASA POWER", nameB: "ERA5" };
+  const note = (id, cmp, label) => {
+    const target = document.getElementById(id);
+    const text = c ? describeDispute(cmp, { label, ...names }) : "";
+    if (target) target.innerHTML = text ? `<div class="explain" style="border-left-color:#f5a623;"><strong>${escapeHtml(text)}</strong></div>` : "";
+  };
+  note("rainDispute", c && c.rainCmp, "annual rainfall");
+  note("tempDispute", c && c.tempCmp, "annual mean temperature");
   el.innerHTML = parts.length ? `
     <div class="card" style="margin-bottom:14px;">
       <div class="card-label">Warning: second-source check</div>

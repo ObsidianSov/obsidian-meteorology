@@ -25,6 +25,10 @@ All of these run on every `node run_tests.js` (`test_trend_stats.js`, `test_pipe
 | ERA5 (Open-Meteo archive) response parser | fixtures shaped like the documented response, plus error, unit and missing-value cases | passes |
 | Request and response with the **live** Open-Meteo archive | not yet checked from this environment (no network access to it) | **to be confirmed on a phone** |
 
+Live view: the page was driven in a simulated browser with complete answers, null values, a daily list
+that is too short, a missing variable and an empty forecast. In every case it showed "n/a" (never 0,
+NaN or undefined), reported the number of missing values, and raised no script errors.
+
 False-alarm rate: a simulation (35 years, normal noise) showed the usual 1.5 x IQR fence would
 wrongly report "sources disagree" in about 36% of comparisons, so the comparison uses 3 x IQR
 (about 1%).

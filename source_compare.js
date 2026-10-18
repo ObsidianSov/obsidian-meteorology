@@ -77,10 +77,20 @@ function describeComparison(cmp, opts = {}) {
   return `The two sources disagree in ${cmp.flagged.length} year${cmp.flagged.length === 1 ? "" : "s"}, where the difference between them is unusually large: ${list}. ${stats}${without} ${bias} ${trends} This does not say which source is right; treat results that depend on those years with caution.`;
 }
 
+function describeDispute(cmp, opts = {}) {
+  // A note to show under a headline trend when the second source tells a different story.
+  // Empty when the sources agree or when there is nothing to compare.
+  const { label = "the series", nameA = "Source A", nameB = "Source B" } = opts;
+  if (!cmp || cmp.verdict !== "diverge" || !cmp.trendA || !cmp.trendB) return "";
+  if (cmp.trendA.verdict === cmp.trendB.verdict) return "";
+  const words = { increasing: "a significant increasing trend", decreasing: "a significant decreasing trend", none: "no significant trend", too_few: "too few years to test" };
+  return `Disputed: ${nameB} shows ${words[cmp.trendB.verdict]} for the same years, and the two sources disagree strongly in ${cmp.flagged.join(", ")}. Do not rely on the ${label} trend above yet.`;
+}
+
 if (typeof module !== "undefined") {
   const t = require("./trend_stats.js");
   globalThis.MIN_YEARS_FOR_TREND = t.MIN_YEARS_FOR_TREND;
   globalThis.flagUnusualYears = t.flagUnusualYears;
   globalThis.analyzeTrend = t.analyzeTrend;
-  module.exports = { COMPARE_FENCE_K, pearson, spearman, ranks, buildComparison, describeComparison };
+  module.exports = { COMPARE_FENCE_K, pearson, spearman, ranks, buildComparison, describeComparison, describeDispute };
 }

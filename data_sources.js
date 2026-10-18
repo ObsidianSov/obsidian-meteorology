@@ -107,10 +107,45 @@ function parseArchiveResponse(json) {
   return { ok: true, rain: rain.series, temp: temp.series, missingRain: rain.missing, missingTemp: temp.missing };
 }
 
+const LIVE_UNITS = { temperature_2m: "°C", apparent_temperature: "°C", wind_speed_10m: "km/h", precipitation: "mm", surface_pressure: "hPa", relative_humidity_2m: "%" };
+const LIVE_CURRENT_FIELDS = ["temperature_2m", "relative_humidity_2m", "apparent_temperature", "wind_speed_10m", "precipitation", "weather_code", "surface_pressure"];
+const LIVE_DAILY_FIELDS = ["temperature_2m_max", "temperature_2m_min", "precipitation_sum", "weather_code", "wind_speed_10m_max", "uv_index_max"];
+
+function readLiveResponse(json) {
+  // Checks the Open-Meteo forecast answer and returns { ok: true, current, daily, missingCount, problems }
+  // where every value is a number or null (never 0 for a missing value), or { ok: false, error }.
+  if (!json || typeof json !== "object") return { ok: false, error: "The service returned something that is not data." };
+  if (json.error) return { ok: false, error: json.reason ? `The service reported an error: ${json.reason}` : "The service reported an error." };
+  if (!json.current || typeof json.current !== "object") return { ok: false, error: "The response has no current conditions." };
+  if (!json.daily || !Array.isArray(json.daily.time)) return { ok: false, error: "The response has no daily forecast." };
+  const cu = json.current_units || {};
+  for (const [name, unit] of Object.entries(LIVE_UNITS)) {
+    if (cu[name] !== undefined && cu[name] !== unit) return { ok: false, error: `Unexpected unit for ${name}: ${cu[name]} (expected ${unit}).` };
+  }
+  const problems = [];
+  let missingCount = 0;
+  const num = (v) => (typeof v === "number" && Number.isFinite(v)) ? v : null;
+  const current = { time: typeof json.current.time === "string" ? json.current.time : null };
+  for (const f of LIVE_CURRENT_FIELDS) {
+    current[f] = num(json.current[f]);
+    if (current[f] === null) { missingCount++; problems.push(`current ${f} is missing`); }
+  }
+  const n = json.daily.time.length;
+  const daily = { time: json.daily.time.slice() };
+  for (const f of LIVE_DAILY_FIELDS) {
+    const src = Array.isArray(json.daily[f]) ? json.daily[f] : [];
+    if (!Array.isArray(json.daily[f])) problems.push(`daily ${f} is missing`);
+    daily[f] = Array.from({ length: n }, (_, i) => num(src[i]));
+    missingCount += daily[f].filter(v => v === null).length;
+  }
+  return { ok: true, current, daily, missingCount, problems };
+}
+
 if (typeof module !== "undefined") module.exports = {
   DATA_SOURCES,
   ARCHIVE_BASE_URL,
   EARLIEST_ARCHIVE_YEAR,
   buildArchiveUrl,
-  parseArchiveResponse
+  parseArchiveResponse,
+  readLiveResponse
 };

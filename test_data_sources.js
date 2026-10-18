@@ -1,4 +1,4 @@
-const { DATA_SOURCES, buildArchiveUrl, parseArchiveResponse, EARLIEST_ARCHIVE_YEAR, ARCHIVE_BASE_URL } = require('./data_sources.js');
+const { DATA_SOURCES, buildArchiveUrl, parseArchiveResponse, readLiveResponse, EARLIEST_ARCHIVE_YEAR, ARCHIVE_BASE_URL } = require('./data_sources.js');
 
 let passed = 0, total = 0;
 function check(name, condition) {
@@ -52,6 +52,36 @@ check("a missing variable is rejected", (() => { const x = JSON.parse(JSON.strin
 check("arrays that do not line up with the dates are rejected", (() => { const x = JSON.parse(JSON.stringify(good)); x.daily.precipitation_sum = [1, 2]; return !parseArchiveResponse(x).ok; })());
 check("an unreadable date is rejected", (() => { const x = JSON.parse(JSON.stringify(good)); x.daily.time[1] = "bad"; return !parseArchiveResponse(x).ok; })());
 check("a response without a units block is still accepted (units are checked only when given)", (() => { const x = JSON.parse(JSON.stringify(good)); delete x.daily_units; return parseArchiveResponse(x).ok; })());
+
+
+// ----- live forecast response (Milestone 3, step 3) -----
+const days = ["2026-10-18", "2026-10-19", "2026-10-20"];
+const liveGood = {
+  current_units: { temperature_2m: "°C", relative_humidity_2m: "%", apparent_temperature: "°C", wind_speed_10m: "km/h", precipitation: "mm", surface_pressure: "hPa" },
+  current: { time: "2026-10-18T12:00", temperature_2m: 33.1, relative_humidity_2m: 41, apparent_temperature: 34.2, wind_speed_10m: 12.5, precipitation: 0, weather_code: 1, surface_pressure: 965.2 },
+  daily: { time: days, temperature_2m_max: [35, 36, 34], temperature_2m_min: [22, 23, 22], precipitation_sum: [0, 1.2, 0], weather_code: [1, 3, 61], wind_speed_10m_max: [20, 18, 25], uv_index_max: [9, 8, 9] }
+};
+const L = readLiveResponse(liveGood);
+check("live: a complete answer is read with nothing missing", L.ok && L.missingCount === 0 && L.problems.length === 0 && L.daily.time.length === 3);
+check("live: zero rain stays 0 (a real value)", L.current.precipitation === 0 && L.daily.precipitation_sum[0] === 0);
+const liveNulls = JSON.parse(JSON.stringify(liveGood)); liveNulls.current.temperature_2m = null; liveNulls.current.precipitation = null; liveNulls.daily.precipitation_sum[1] = null;
+const LN = readLiveResponse(liveNulls);
+check("live: null values stay null and are counted (never turned into 0)", LN.ok && LN.current.temperature_2m === null && LN.current.precipitation === null && LN.daily.precipitation_sum[1] === null && LN.missingCount === 3);
+check("live: the problems list says which values are missing", LN.problems.includes("current temperature_2m is missing"));
+check("live: text and NaN become null", (() => { const x = JSON.parse(JSON.stringify(liveGood)); x.current.wind_speed_10m = "fast"; x.daily.uv_index_max[0] = NaN; const r = readLiveResponse(x); return r.current.wind_speed_10m === null && r.daily.uv_index_max[0] === null; })());
+const liveShort = JSON.parse(JSON.stringify(liveGood)); liveShort.daily.temperature_2m_max = [35];
+const LS = readLiveResponse(liveShort);
+check("live: a daily list that is too short is padded with null, not with zeros", LS.ok && LS.daily.temperature_2m_max.length === 3 && LS.daily.temperature_2m_max[1] === null && LS.daily.temperature_2m_max[2] === null);
+const liveNoArray = JSON.parse(JSON.stringify(liveGood)); delete liveNoArray.daily.uv_index_max;
+const LA = readLiveResponse(liveNoArray);
+check("live: a missing daily variable becomes a column of nulls and is reported", LA.ok && LA.daily.uv_index_max.every(v => v === null) && LA.problems.includes("daily uv_index_max is missing"));
+check("live: a response with no current conditions is rejected", !readLiveResponse({ daily: liveGood.daily }).ok);
+check("live: a response with no daily forecast is rejected", !readLiveResponse({ current: liveGood.current }).ok);
+check("live: an error response gives the service's reason", /limit/.test(readLiveResponse({ error: true, reason: "rate limit" }).error));
+check("live: null, text and numbers are not data", [null, "x", 5].every(v => readLiveResponse(v).ok === false));
+check("live: a wrong unit is rejected", (() => { const x = JSON.parse(JSON.stringify(liveGood)); x.current_units.temperature_2m = "°F"; const r = readLiveResponse(x); return !r.ok && /°F/.test(r.error); })());
+check("live: a missing units block is accepted", (() => { const x = JSON.parse(JSON.stringify(liveGood)); delete x.current_units; return readLiveResponse(x).ok; })());
+check("live: the input is not changed", (() => { const x = JSON.parse(JSON.stringify(liveGood)); const copy = JSON.stringify(x); readLiveResponse(x); return JSON.stringify(x) === copy; })());
 
 console.log(`\nRESULTS: ${passed}/${total} tests passed`);
 process.exit(passed === total ? 0 : 1);

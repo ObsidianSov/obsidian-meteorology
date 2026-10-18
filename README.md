@@ -13,7 +13,7 @@ treat the historical numbers as exploratory, not as research results.
 
 | Feature | Status |
 |---|---|
-| Current conditions and 7-day forecast (Open-Meteo, model-derived) | Implemented |
+| Current conditions and 7-day forecast (Open-Meteo model values, labelled as such; missing values shown as n/a) | Implemented |
 | Location switcher (Katsina and other Nigerian cities) | Implemented |
 | Student / Advanced / NiMET-style views | Implemented |
 | Annual rainfall and mean temperature (NASA POWER, daily data from 1981) | Experimental |
@@ -30,7 +30,7 @@ treat the historical numbers as exploratory, not as research results.
 
 - `index.html`: the app, a single self-contained file (open it any way you like). **Generated: never edit it directly.**
 - `index.src.html`: the source of the page (interface, API calls, charts)
-- `climate_math.js`, `trend_stats.js`, `rainfall_onset.js`, `knowledge_layer.js`, `data_sources.js`, `source_compare.js`, `cache_store.js`, `request_tools.js`: modules (one copy each, tested)
+- `climate_math.js`, `trend_stats.js`, `rainfall_onset.js`, `knowledge_layer.js`, `data_sources.js`, `source_compare.js`, `cache_store.js`, `request_tools.js`, `display_format.js`: modules (one copy each, tested)
 - `build.js`: combines `index.src.html` and the modules into `index.html`
 - `test_*.js`: unit tests, including `test_pipeline_golden.js` (whole pipeline vs independent Python results in `fixtures/`); `run_tests.js` runs all of them
 - `docs/`: audit, method notes (`onset-method.md`, `trend-method.md`), data sources (`data-sources.md`), validation record and project status
