@@ -65,7 +65,7 @@ function selectCompleteYears(annualData, startYear, endYear, minCoverage = DEFAU
 function linearRegression(points) {
   // points: array of {year, value} (value = total or mean, whichever series)
   const n = points.length;
-  if (n < 2) return { slope: 0, intercept: 0, r2: 0 };
+  if (n < 2) return { slope: 0, intercept: 0, r2: null };
 
   const xs = points.map(p => p.year);
   const ys = points.map(p => p.value);
@@ -87,9 +87,10 @@ function linearRegression(points) {
     ssRes += (ys[i] - predicted) ** 2;
     ssTot += (ys[i] - meanY) ** 2;
   }
-  const r2 = ssTot === 0 ? 0 : 1 - (ssRes / ssTot);
+  // R² is not meaningful with fewer than 3 points (2 points always fit a line perfectly)
+  const r2 = n < 3 ? null : (ssTot === 0 ? 0 : 1 - (ssRes / ssTot));
 
-  return { slope: Math.round(slope * 1000) / 1000, intercept: Math.round(intercept * 100) / 100, r2: Math.round(r2 * 1000) / 1000 };
+  return { slope: Math.round(slope * 1000) / 1000, intercept: Math.round(intercept * 100) / 100, r2: r2 === null ? null : Math.round(r2 * 1000) / 1000 };
 }
 
 function findExtremeYear(yearlyData, valueKey, mode) {

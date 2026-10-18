@@ -132,6 +132,50 @@ function describeTrend(t, opts = {}) {
   return `${capLabel} shows a statistically significant ${phrase} over ${span} (Mann-Kendall test, ${formatPValue(t.p)}): about ${estimate}. This describes this dataset at this location; it does not by itself explain the cause.`;
 }
 
+function quantile(values, q) {
+  // Linear interpolation between ranks (same as numpy.percentile's default).
+  const sorted = [...values].sort((a, b) => a - b);
+  const pos = (sorted.length - 1) * q;
+  const lower = Math.floor(pos), upper = Math.ceil(pos);
+  return sorted[lower] + (sorted[upper] - sorted[lower]) * (pos - lower);
+}
+
+function flagUnusualYears(points, k = 1.5, minYears = MIN_YEARS_FOR_TREND) {
+  // Tukey fences: a year is "unusual" if its value is more than k * IQR beyond the quartiles.
+  // Unusual years are FLAGGED for checking, never removed from the data: they may be real extremes.
+  if (points.length < minYears) return { flagged: [], lowerFence: null, upperFence: null, q1: null, q3: null };
+  const values = points.map(p => p.value);
+  const q1 = quantile(values, 0.25), q3 = quantile(values, 0.75), iqr = q3 - q1;
+  const lowerFence = q1 - k * iqr, upperFence = q3 + k * iqr;
+  const flagged = points.filter(p => p.value < lowerFence || p.value > upperFence)
+                        .sort((a, b) => a.year - b.year);
+  return { flagged, lowerFence, upperFence, q1, q3 };
+}
+
+function trendSensitivity(points) {
+  // Does the trend verdict depend on the unusual years? Re-runs the test without them.
+  const withAll = analyzeTrend(points);
+  const { flagged } = flagUnusualYears(points);
+  if (flagged.length === 0) return { flagged, withAll, without: null, changed: false };
+  const flaggedYears = new Set(flagged.map(f => f.year));
+  const without = analyzeTrend(points.filter(p => !flaggedYears.has(p.year)));
+  return { flagged, withAll, without, changed: without.verdict !== withAll.verdict };
+}
+
+function describeSensitivity(sens, opts = {}) {
+  // Empty string when nothing is unusual. Otherwise a plain sentence, with a warning if the verdict changes.
+  if (sens.flagged.length === 0) return "";
+  const { unit = "", digits = 1, upPhrase = "increasing trend", downPhrase = "decreasing trend" } = opts;
+  const list = sens.flagged.map(f => `${f.year} (${f.value.toFixed(digits)} ${unit})`.replace(" )", ")")).join(", ");
+  const head = `Unusual years flagged for checking (not removed): ${list}.`;
+  if (!sens.changed) return `${head} Leaving them out does not change the trend result.`;
+  const w = sens.without;
+  const words = { increasing: `a statistically significant ${upPhrase}`, decreasing: `a statistically significant ${downPhrase}`,
+                  none: "no statistically detectable trend", too_few: "too few years to test" };
+  const pText = w.p === null ? "" : ` (Mann-Kendall test, ${formatPValue(w.p)})`;
+  return `${head} The trend result depends on them: without these ${sens.flagged.length} years it is ${words[w.verdict]}${pText}. A few extreme years can come from a problem in the data, so check this series against another source before relying on it.`;
+}
+
 if (typeof module !== "undefined") module.exports = {
   TREND_ALPHA,
   MIN_YEARS_FOR_TREND,
@@ -142,5 +186,9 @@ if (typeof module !== "undefined") module.exports = {
   analyzeTrend,
   formatPValue,
   signedNumber,
-  describeTrend
+  describeTrend,
+  quantile,
+  flagUnusualYears,
+  trendSensitivity,
+  describeSensitivity
 };

@@ -191,11 +191,11 @@
     <div class="card-label">Historical range</div>
     <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:8px;">
       <label style="font-size:0.85rem; color:var(--text-dim);">From year:
-        <input type="number" id="histStartYear" value="1990" min="1981" max="2025"
+        <input type="number" id="histStartYear" value="1990" min="1981"
           style="background:var(--card); border:1px solid var(--border); color:var(--text); padding:6px 8px; border-radius:6px; width:90px; margin-left:6px;">
       </label>
       <label style="font-size:0.85rem; color:var(--text-dim);">To year:
-        <input type="number" id="histEndYear" value="2024" min="1981" max="2025"
+        <input type="number" id="histEndYear" value="2024" min="1981"
           style="background:var(--card); border:1px solid var(--border); color:var(--text); padding:6px 8px; border-radius:6px; width:90px; margin-left:6px;">
       </label>
       <button id="loadHistoricalBtn" class="tier-btn" style="background:var(--cyan); color:#0a0e17;">Load Data</button>
@@ -351,7 +351,7 @@ function selectCompleteYears(annualData, startYear, endYear, minCoverage = DEFAU
 function linearRegression(points) {
   // points: array of {year, value} (value = total or mean, whichever series)
   const n = points.length;
-  if (n < 2) return { slope: 0, intercept: 0, r2: 0 };
+  if (n < 2) return { slope: 0, intercept: 0, r2: null };
 
   const xs = points.map(p => p.year);
   const ys = points.map(p => p.value);
@@ -373,9 +373,10 @@ function linearRegression(points) {
     ssRes += (ys[i] - predicted) ** 2;
     ssTot += (ys[i] - meanY) ** 2;
   }
-  const r2 = ssTot === 0 ? 0 : 1 - (ssRes / ssTot);
+  // R² is not meaningful with fewer than 3 points (2 points always fit a line perfectly)
+  const r2 = n < 3 ? null : (ssTot === 0 ? 0 : 1 - (ssRes / ssTot));
 
-  return { slope: Math.round(slope * 1000) / 1000, intercept: Math.round(intercept * 100) / 100, r2: Math.round(r2 * 1000) / 1000 };
+  return { slope: Math.round(slope * 1000) / 1000, intercept: Math.round(intercept * 100) / 100, r2: r2 === null ? null : Math.round(r2 * 1000) / 1000 };
 }
 
 function findExtremeYear(yearlyData, valueKey, mode) {
@@ -534,6 +535,50 @@ function describeTrend(t, opts = {}) {
   return `${capLabel} shows a statistically significant ${phrase} over ${span} (Mann-Kendall test, ${formatPValue(t.p)}): about ${estimate}. This describes this dataset at this location; it does not by itself explain the cause.`;
 }
 
+function quantile(values, q) {
+  // Linear interpolation between ranks (same as numpy.percentile's default).
+  const sorted = [...values].sort((a, b) => a - b);
+  const pos = (sorted.length - 1) * q;
+  const lower = Math.floor(pos), upper = Math.ceil(pos);
+  return sorted[lower] + (sorted[upper] - sorted[lower]) * (pos - lower);
+}
+
+function flagUnusualYears(points, k = 1.5, minYears = MIN_YEARS_FOR_TREND) {
+  // Tukey fences: a year is "unusual" if its value is more than k * IQR beyond the quartiles.
+  // Unusual years are FLAGGED for checking, never removed from the data: they may be real extremes.
+  if (points.length < minYears) return { flagged: [], lowerFence: null, upperFence: null, q1: null, q3: null };
+  const values = points.map(p => p.value);
+  const q1 = quantile(values, 0.25), q3 = quantile(values, 0.75), iqr = q3 - q1;
+  const lowerFence = q1 - k * iqr, upperFence = q3 + k * iqr;
+  const flagged = points.filter(p => p.value < lowerFence || p.value > upperFence)
+                        .sort((a, b) => a.year - b.year);
+  return { flagged, lowerFence, upperFence, q1, q3 };
+}
+
+function trendSensitivity(points) {
+  // Does the trend verdict depend on the unusual years? Re-runs the test without them.
+  const withAll = analyzeTrend(points);
+  const { flagged } = flagUnusualYears(points);
+  if (flagged.length === 0) return { flagged, withAll, without: null, changed: false };
+  const flaggedYears = new Set(flagged.map(f => f.year));
+  const without = analyzeTrend(points.filter(p => !flaggedYears.has(p.year)));
+  return { flagged, withAll, without, changed: without.verdict !== withAll.verdict };
+}
+
+function describeSensitivity(sens, opts = {}) {
+  // Empty string when nothing is unusual. Otherwise a plain sentence, with a warning if the verdict changes.
+  if (sens.flagged.length === 0) return "";
+  const { unit = "", digits = 1, upPhrase = "increasing trend", downPhrase = "decreasing trend" } = opts;
+  const list = sens.flagged.map(f => `${f.year} (${f.value.toFixed(digits)} ${unit})`.replace(" )", ")")).join(", ");
+  const head = `Unusual years flagged for checking (not removed): ${list}.`;
+  if (!sens.changed) return `${head} Leaving them out does not change the trend result.`;
+  const w = sens.without;
+  const words = { increasing: `a statistically significant ${upPhrase}`, decreasing: `a statistically significant ${downPhrase}`,
+                  none: "no statistically detectable trend", too_few: "too few years to test" };
+  const pText = w.p === null ? "" : ` (Mann-Kendall test, ${formatPValue(w.p)})`;
+  return `${head} The trend result depends on them: without these ${sens.flagged.length} years it is ${words[w.verdict]}${pText}. A few extreme years can come from a problem in the data, so check this series against another source before relying on it.`;
+}
+
 if (typeof module !== "undefined") module.exports = {
   TREND_ALPHA,
   MIN_YEARS_FOR_TREND,
@@ -544,7 +589,11 @@ if (typeof module !== "undefined") module.exports = {
   analyzeTrend,
   formatPValue,
   signedNumber,
-  describeTrend
+  describeTrend,
+  quantile,
+  flagUnusualYears,
+  trendSensitivity,
+  describeSensitivity
 };
 </script>
 <script>
@@ -934,6 +983,12 @@ let rainChart = null;
 let tempChart = null;
 let onsetChart = null;
 
+// The latest selectable year is the last complete calendar year (updates itself every year)
+(function setYearLimits() {
+  const lastCompleteYear = new Date().getFullYear() - 1;
+  for (const id of ["histStartYear", "histEndYear"]) document.getElementById(id).max = lastCompleteYear;
+})();
+
 async function loadHistorical() {
   const resultsDiv = document.getElementById("historical-results");
   const startYear = document.getElementById("histStartYear").value;
@@ -1046,6 +1101,15 @@ function renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
   const mkText = (t) => (t.verdict === "too_few" || t.p === null) ? "n/a" : `Z = ${t.z.toFixed(2)}, ${formatPValue(t.p)}`;
   const regRain = linearRegression(annualRain.map(y => ({ year: y.year, value: y.total })));
   const regTemp = linearRegression(annualTemp.map(y => ({ year: y.year, value: y.mean })));
+  const rainSens = trendSensitivity(annualRain.map(y => ({ year: y.year, value: y.total })));
+  const tempSens = trendSensitivity(annualTemp.map(y => ({ year: y.year, value: y.mean })));
+  const onsetSens = trendSensitivity(validOnsetResults.map(r => ({ year: r.year, value: r.onsetDayOfYear })));
+  const sensBlock = (text) => text ? `<div class="explain" style="border-left-color:#f5a623;">${text}</div>` : "";
+  const rainSensText = describeSensitivity(rainSens, { unit: "mm", digits: 1 });
+  const tempSensText = describeSensitivity(tempSens, { unit: "°C", digits: 1, upPhrase: "warming trend", downPhrase: "cooling trend" });
+  const onsetSensText = describeSensitivity(onsetSens, { unit: "day of year", digits: 0, upPhrase: "trend towards later onset", downPhrase: "trend towards earlier onset" });
+  const flaggedList = (s) => s.flagged.length ? s.flagged.map(f => f.year).join(", ") : "none";
+  const withoutVerdict = (s) => s.without ? verdictLabel(s.without) : "n/a";
   const meanOnsetLabel = onsetStats.yearsWithValidOnset > 0 ? formatDayOfYear(onsetStats.mean) : "n/a";
 
   let studentSummary = `
@@ -1055,11 +1119,13 @@ function renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
       (${wettestYear.total} mm), and the driest was <strong>${driestYear.year}</strong>
       (${driestYear.total} mm).
     </div>
+    ${sensBlock(rainSensText)}
     <div class="explain">
       ${describeTrend(tempTrend, { label: "annual mean temperature", unit: "°C", digits: 3, upPhrase: "warming trend", downPhrase: "cooling trend" })}
       The hottest year on average was <strong>${hottestYear.year}</strong> (${hottestYear.mean}°C),
       the coolest was <strong>${coldestYear.year}</strong> (${coldestYear.mean}°C).
     </div>
+    ${sensBlock(tempSensText)}
     <div class="explain">
       ${validOnsetResults.length > 0 ? `
         The rainy season onset was detected in <strong>${onsetStats.yearsWithValidOnset}</strong>
@@ -1071,6 +1137,7 @@ function renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
         ${describeTrend(onsetTrend, { label: "the rainy-season onset date", unit: "days", digits: 2, upPhrase: "trend towards later onset", downPhrase: "trend towards earlier onset" })}
       ` : `No reliable rainy season onset could be detected in this year range from this dataset.`}
     </div>
+    ${sensBlock(onsetSensText)}
     ${insufficientNote ? `<div class="explain">${insufficientNote}</div>` : ""}`;
 
   let advancedSummary = `
@@ -1080,7 +1147,9 @@ function renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
       <tr><td>Trend (Mann-Kendall, 5% level)</td><td>${verdictLabel(rainTrend)}</td><td>${verdictLabel(tempTrend)}</td></tr>
       <tr><td>Mann-Kendall Z, p-value</td><td>${mkText(rainTrend)}</td><td>${mkText(tempTrend)}</td></tr>
       <tr><td>Sen's slope (95% range)</td><td>${senText(rainTrend, 1, "mm/year")}</td><td>${senText(tempTrend, 3, "°C/year")}</td></tr>
-      <tr><td>Linear regression slope, R² (comparison only)</td><td>${regRain.slope} mm/year, R² ${regRain.r2}</td><td>${regTemp.slope} °C/year, R² ${regTemp.r2}</td></tr>
+      <tr><td>Linear regression slope, R² (comparison only)</td><td>${regRain.slope} mm/year, R² ${regRain.r2 === null ? "n/a" : regRain.r2}</td><td>${regTemp.slope} °C/year, R² ${regTemp.r2 === null ? "n/a" : regTemp.r2}</td></tr>
+      <tr><td>Unusual years (flagged, not removed)</td><td>${flaggedList(rainSens)}</td><td>${flaggedList(tempSens)}</td></tr>
+      <tr><td>Trend verdict without the unusual years</td><td>${withoutVerdict(rainSens)}</td><td>${withoutVerdict(tempSens)}</td></tr>
       <tr><td>Wettest / Hottest year</td><td>${wettestYear.year} (${wettestYear.total}mm)</td><td>${hottestYear.year} (${hottestYear.mean}°C)</td></tr>
       <tr><td>Driest / Coolest year</td><td>${driestYear.year} (${driestYear.total}mm)</td><td>${coldestYear.year} (${coldestYear.mean}°C)</td></tr>
     </table>
@@ -1090,6 +1159,7 @@ function renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
       <tr><td>Mean onset</td><td>${meanOnsetLabel}${onsetStats.yearsWithValidOnset > 0 ? ` (day ${onsetStats.mean}), standard deviation ${onsetStats.stdDev} days` : ''}</td></tr>
       <tr><td>Onset trend (Mann-Kendall, 5% level)</td><td>${verdictLabel(onsetTrend)}${onsetTrend.p !== null && onsetTrend.verdict !== "too_few" ? `, ${mkText(onsetTrend)}` : ''}</td></tr>
       <tr><td>Sen's slope (95% range)</td><td>${senText(onsetTrend, 2, "days/year")} (positive = later)</td></tr>
+      <tr><td>Unusual onset years (flagged, not removed)</td><td>${flaggedList(onsetSens)}${onsetSens.without ? ` (trend without them: ${withoutVerdict(onsetSens)})` : ''}</td></tr>
       <tr><td>Earliest / Latest onset</td><td>${earliestOnset ? earliestOnset.onsetDate : 'n/a'} / ${latestOnset ? latestOnset.onsetDate : 'n/a'}</td></tr>
     </table>`;
 

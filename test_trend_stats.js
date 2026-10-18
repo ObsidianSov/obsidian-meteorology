@@ -1,4 +1,4 @@
-const { erfc, normalCDF, mannKendall, senSlope, analyzeTrend, formatPValue, describeTrend, TREND_ALPHA, MIN_YEARS_FOR_TREND } = require('./trend_stats.js');
+const { erfc, normalCDF, mannKendall, senSlope, analyzeTrend, formatPValue, describeTrend, quantile, flagUnusualYears, trendSensitivity, describeSensitivity, TREND_ALPHA, MIN_YEARS_FOR_TREND } = require('./trend_stats.js');
 
 let passed = 0, total = 0;
 function check(name, condition) {
@@ -73,6 +73,36 @@ check("too-few-years wording says so and claims nothing", /Only 7 usable years: 
 check("signed slopes: positive gets a plus sign", describeTrend(analyzeTrend(asPts(FIXTURES[1])), { label: "x", unit: "u", digits: 1 }).includes("+"));
 check("formatPValue: 0.0004 -> 'p < 0.001', 0.0423 -> 'p = 0.042'", formatPValue(0.0004) === "p < 0.001" && formatPValue(0.0423) === "p = 0.042");
 check("singular year wording ('Only 1 usable year')", /Only 1 usable year:/.test(describeTrend({ verdict: 'too_few', n: 1, minYears: 10 }, { label: "x" })));
+
+
+// ---------- Step 5: unusual years and sensitivity of the trend ----------
+// Reference: numpy.percentile (quartiles) and pymannkendall (p-values) on a rainfall-like series with a late jump
+const SENS = {"years": [1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024], "values": [480, 665, 665, 560, 815, 570, 615, 575, 735, 545, 610, 605, 610, 670, 475, 650, 555, 605, 620, 490, 695, 540, 760, 530, 515, 830, 780, 740, 890, 700, 1545, 1784.5, 1325, 985, 1290], "q1": 565.0, "q3": 770.0, "lo": 257.5, "hi": 1077.5, "flagged": [2020, 2021, 2022, 2024], "pAll": 0.0018642026410415902, "pWithout": 0.07419684883733635, "nWithout": 31, "quantiles": [{"values": [500.1, 535.8, 467.1, 393.1, 445.4, 381.0, 507.2, 660.8, 440.9, 425.5], "q1": 429.35, "q3": 505.425}, {"values": [558.8, 542.8, 512.6, 388.3, 496.5, 583.4, 338.7, 445.1, 271.9, 345.3, 279.0], "q1": 342.0, "q3": 527.7}, {"values": [471.8, 347.9, 532.6, 518.8, 477.6, 198.0, 435.4, 494.2, 513.6, 316.4, 442.7, 382.6, 402.9, 627.3, 403.1, 496.1, 606.1, 430.0, 486.6, 513.3, 507.7, 353.0, 509.1, 663.1, 314.3, 603.1, 514.3, 423.0, 740.0, 591.5, 356.1, 508.9, 569.2, 477.3], "q1": 408.07500000000005, "q3": 517.675}, {"values": [581.9, 492.0, 580.1, 672.6, 418.9, 524.4, 444.4, 515.3, 357.5, 430.5, 476.5, 607.9, 637.4, 341.2, 404.6, 577.6, 260.9, 444.4, 488.3, 650.8, 582.7, 460.7, 455.8, 470.0, 682.8, 448.6, 463.6, 542.3, 485.5, 476.3, 366.3, 498.6, 446.8, 639.9, 578.4], "q1": 445.6, "q3": 579.25}]};
+for (const [i, q] of SENS.quantiles.entries()) {
+  check(`quantile matches numpy.percentile (series ${i + 1}, n=${q.values.length}): Q1`, close(quantile(q.values, 0.25), q.q1, 1e-9));
+  check(`quantile matches numpy.percentile (series ${i + 1}): Q3`, close(quantile(q.values, 0.75), q.q3, 1e-9));
+}
+const sensPts = SENS.years.map((y, i) => ({ year: y, value: SENS.values[i] }));
+const fl = flagUnusualYears(sensPts);
+check("fences match numpy (Q1 %s, Q3 %s)".replace("%s", SENS.q1).replace("%s", SENS.q3), close(fl.q1, SENS.q1, 1e-9) && close(fl.q3, SENS.q3, 1e-9));
+check("lower and upper Tukey fences (1.5 x IQR) match", close(fl.lowerFence, SENS.lo, 1e-9) && close(fl.upperFence, SENS.hi, 1e-9));
+check("the unusual years are 2020, 2021, 2022 and 2024", JSON.stringify(fl.flagged.map(f => f.year)) === JSON.stringify(SENS.flagged));
+check("flagged years are not removed from the input", sensPts.length === 35);
+const sens = trendSensitivity(sensPts);
+check("with all years the trend is 'increasing' (p matches pymannkendall)", sens.withAll.verdict === 'increasing' && close(sens.withAll.p, SENS.pAll, 1e-7));
+check("without the unusual years the verdict is 'none' and p matches pymannkendall", sens.without.verdict === 'none' && sens.without.n === SENS.nWithout && close(sens.without.p, SENS.pWithout, 1e-7));
+check("the verdict is reported as changed", sens.changed === true);
+const sensText = describeSensitivity(sens, { unit: "mm", digits: 1 });
+check("warning names the flagged years with their values", sensText.includes("2021 (1784.5 mm)") && sensText.includes("not removed"));
+check("warning says the result depends on them and what it becomes", /The trend result depends on them: without these 4 years it is no statistically detectable trend \(Mann-Kendall test, p = 0\.0\d\d\)/.test(sensText));
+check("warning tells the user to check another source", /check this series against another source/.test(sensText));
+check("series with fewer than 10 years flags nothing", flagUnusualYears(sensPts.slice(0, 9)).flagged.length === 0);
+const calm = Array.from({ length: 20 }, (_, i) => ({ year: 2000 + i, value: 500 + (i % 5) * 10 }));
+check("a calm series has no flagged years and no warning text", flagUnusualYears(calm).flagged.length === 0 && describeSensitivity(trendSensitivity(calm)) === "");
+const stable = Array.from({ length: 20 }, (_, i) => ({ year: 2000 + i, value: 500 + (i % 5) * 10 }));
+stable[7].value = 900;   // one big wet year in an otherwise flat series
+const stableSens = trendSensitivity(stable);
+check("one extreme year in a flat series is flagged but does not change the verdict", stableSens.flagged.length === 1 && stableSens.changed === false && /Leaving them out does not change the trend result\./.test(describeSensitivity(stableSens, { unit: "mm" })));
 
 console.log(`\nRESULTS: ${passed}/${total} tests passed`);
 process.exit(passed === total ? 0 : 1);

@@ -127,5 +127,12 @@ check("excluding the partial year gives a flat trend (slope 0)", trendRight.slop
 // B7: an empty list no longer crashes
 check("findExtremeYear on an empty list returns null instead of throwing", findExtremeYear([], 'total', 'max') === null);
 
+
+// ---------- Step 5: B8 and B9 ----------
+check("B8: R² is null (not 1) for a line through only 2 points", linearRegression([{ year: 2000, value: 1 }, { year: 2001, value: 3 }]).r2 === null);
+check("B8: slope is still computed from 2 points", linearRegression([{ year: 2000, value: 1 }, { year: 2001, value: 3 }]).slope === 2);
+check("B8: R² is null for fewer than 2 points", linearRegression([{ year: 2000, value: 1 }]).r2 === null && linearRegression([]).r2 === null);
+check("B8: R² is still reported from 3 points on", linearRegression([{ year: 2000, value: 1 }, { year: 2001, value: 3 }, { year: 2002, value: 2 }]).r2 !== null);
+
 console.log(`\nRESULTS: ${passed}/${total} tests passed`);
 process.exit(passed === total ? 0 : 1);

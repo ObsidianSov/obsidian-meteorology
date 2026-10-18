@@ -59,5 +59,10 @@ for (const file of MODULES) {
 const externalScripts = (built.match(/<script src="[^"]+"/g) || []);
 check("the only external script in index.html is the Chart.js CDN", externalScripts.length === 1 && /chart\.js/.test(externalScripts[0]));
 
+
+// B9: the latest selectable year must not be hardcoded
+check("year inputs have no hardcoded maximum (set from the current date)", !/id="hist(Start|End)Year"[^>]*max="/.test(html));
+check("page sets the latest selectable year from the clock", html.includes("setYearLimits") && html.includes("getFullYear() - 1"));
+
 console.log(`\nRESULTS: ${passed}/${total} tests passed`);
 process.exit(passed === total ? 0 : 1);

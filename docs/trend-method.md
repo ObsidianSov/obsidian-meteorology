@@ -33,6 +33,29 @@ Results were compared with independent Python implementations:
 range) on seven reference series, including ties, a constant series and a 7-year series. They
 agree to about 1e-9 (p-values to 1e-8). The reference values are stored in `test_trend_stats.js`.
 
+## Unusual years and how much the verdict depends on them
+
+A trend can be produced by a few extreme years, or by a break in the data source. The app
+therefore also:
+
+1. **Flags unusual years** with Tukey's fences: a year is unusual if it lies more than
+   1.5 x IQR beyond the quartiles of the series (quartiles by linear interpolation, as in
+   `numpy.percentile`). Needs at least 10 years. Flagged years are never removed from the data
+   or from the charts: they may be real extremes.
+2. **Re-runs the trend test without the flagged years.** If the verdict changes, the page
+   says so, lists the years, and tells the user to check the series against another source.
+
+Real example that motivated this: NASA POWER annual rainfall for Katsina, 1990 to 2019,
+ranges from 475 to 891 mm with no trend (p = 0.187). Adding 2020 to 2024 (about 1,000 to
+1,780 mm) gives a "significant increase" (p = 0.002). The cause of the high recent values
+is not known; a data-source problem is possible.
+
+Limits: the fences are computed from all years, so a cluster of unusual years widens them and
+can hide some (in the example, 2020, 2021, 2022 and 2024 are flagged but 2023 is not).
+The Pettitt change-point test was considered and not used here: it has little power for a
+shift in the last few years of a series. Comparing with a second data source is the real fix
+(Milestones 3 and 4).
+
 ## What this does NOT establish
 
 - **Cause.** A significant trend describes this dataset at this location. It does not say why.
