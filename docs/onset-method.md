@@ -33,8 +33,9 @@ directly by this project. Do this before citing the method in a report.
 Missing days are never treated as dry or as wet. Each year gets one of three statuses:
 
 - **detected**: an onset was found and could be confirmed.
-- **none**: data are adequate and no valid onset exists that year.
-- **insufficient data**: missing days stop us from deciding. This happens when
+- **none**: the data cover the core rainy season (through 30 September) and no valid onset exists that year.
+- **insufficient data**: missing or missing-yet days stop us from deciding. This happens when
+  (d) the data end before 30 September and no onset has been found yet (for example the current year),
   (a) missing days could hide a dry spell in the 30-day check,
   (b) fewer than 30 days of data remain after the rain event, or
   (c) a missing day inside the search period means we cannot prove the onset
@@ -50,6 +51,7 @@ with some missing days still counts.
 - Other onset definitions exist (for example 25 mm over 5 days, or different
   dry-spell lengths used in some Nigerian studies). Results are not comparable
   across definitions.
+- The spread shown is the population standard deviation (divides by n). The sample version (n-1) is about 1.4% larger for 35 years.
 - Cessation of the rains is not implemented yet.
 - Leap years: onset is stored as a day-of-year, so a date after 28 February has a day number one higher in a leap year. Mean and standard deviation of onset can be off by at most about one day because of this. Onset dates themselves are exact.
 - Changes in step 3: earlier versions searched from 1 March and allowed 10 dry

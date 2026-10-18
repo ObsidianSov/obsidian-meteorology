@@ -107,7 +107,7 @@ const sustained = d => (d >= 150 && d <= 152) ? 8 : (d > 152 && d % 5 === 0 ? 2 
 
 // Status values on complete data
 check("detectOnsetDetailed: complete data with a real onset -> 'detected'", detectOnsetDetailed(daysFrom(sustained, 1, 250)).status === 'detected');
-check("detectOnsetDetailed: complete data, no rain -> 'none'", detectOnsetDetailed(daysFrom(() => 0.5, 1, 250)).status === 'none');
+check("detectOnsetDetailed: data through the rainy season, no rain -> 'none'", detectOnsetDetailed(daysFrom(() => 0.5, 1, 300)).status === 'none');
 check("detectOnsetForYear still returns a plain day number", typeof detectOnsetForYear(daysFrom(sustained, 1, 250)) === 'number');
 
 // B4: not enough days after the burst to check for a dry spell
@@ -185,6 +185,17 @@ check("formatDayOfYear: day 1 is '1 Jan', day 121 is '1 May', day 152 is '1 Jun'
 check("formatDayOfYear rounds a mean day-of-year (151.6 -> '1 Jun')", formatDayOfYear(151.6) === "1 Jun");
 const sdCheck = onsetVariability([{ year: 2019, onsetDayOfYear: 150, status: 'detected' }, { year: 2020, onsetDayOfYear: 160, status: 'detected' }, { year: 2021, onsetDayOfYear: 170, status: 'detected' }]);
 check("onset spread is available in days: mean 160, standard deviation about 8.16 days", sdCheck.mean === 160 && Math.abs(sdCheck.stdDev - 8.16) < 0.01);
+
+
+// ---------- Step 6: a year that has not been observed long enough is not "no onset" ----------
+check("data that end in April: no onset can be judged -> 'insufficient_data', not 'none'", detectOnsetDetailed(daysFrom(() => 0, 1, 100)).status === 'insufficient_data');
+check("data ending on day 272 (before 30 Sep) with no onset -> 'insufficient_data'", detectOnsetDetailed(daysFrom(() => 0.5, 1, 272)).status === 'insufficient_data');
+check("data reaching day 273 (30 Sep) with no onset -> 'none'", detectOnsetDetailed(daysFrom(() => 0.5, 1, 273)).status === 'none');
+check("an onset found early in a partial year is still 'detected' (data to day 200)", detectOnsetDetailed(daysFrom(sustained, 1, 200)).status === 'detected');
+const partialLeap = computeOnsetDatesAllYears(fullYearSeries(2020, () => 0).slice(0, 273), {});
+check("leap year: data to 30 Sep (day 274) is needed; 273 days of a leap year is 'insufficient_data'", partialLeap[0].status === 'insufficient_data');
+const fullLeapDry = computeOnsetDatesAllYears(fullYearSeries(2020, () => 0), {});
+check("leap year with a full dry year -> 'none'", fullLeapDry[0].status === 'none');
 
 console.log(`\nRESULTS: ${passed}/${total} tests passed`);
 process.exit(passed === total ? 0 : 1);

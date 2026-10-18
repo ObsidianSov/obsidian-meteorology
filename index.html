@@ -654,7 +654,7 @@ function groupDailyByYear(dailySeries) {
 function detectOnsetDetailed(yearDays, options = {}) {
   // Returns { day, status } where status is:
   //   'detected'          a valid onset was found and confirmed
-  //   'none'              the data are complete enough and no valid onset exists in this year
+  //   'none'              data cover the core rainy season (through 30 Sep) and no valid onset exists
   //   'insufficient_data' missing days stop us from confirming the answer
   // Missing days (days absent from yearDays) are NEVER treated as dry or as zero rain.
   const {
@@ -663,7 +663,8 @@ function detectOnsetDetailed(yearDays, options = {}) {
     windowDays = 3,
     dryspellCheckDays = 30,   // how far ahead to check for a false start
     maxDrySpellDays = 7,      // a dry sequence LONGER than this in the check window = false start
-    dryDayThreshold = 1.0     // mm below which a day counts as "dry"
+    dryDayThreshold = 1.0,    // mm below which a day counts as "dry"
+    completeThroughDay = 273  // 'none' is only claimed if data reach this day (30 Sep in a non-leap year)
   } = options;
 
   const valueByDay = {};
@@ -706,7 +707,10 @@ function detectOnsetDetailed(yearDays, options = {}) {
     }
     return { day: onsetDay, status: 'detected' };
   }
-  return { day: null, status: unknownWindowBefore ? 'insufficient_data' : 'none' };
+  // No onset found. We may only say 'none' if the data cover the core rainy season; a year that
+  // ends early (for example the current year) simply has not been observed long enough.
+  const seasonObserved = maxDay >= completeThroughDay;
+  return { day: null, status: (unknownWindowBefore || !seasonObserved) ? 'insufficient_data' : 'none' };
 }
 
 function detectOnsetForYear(yearDays, options = {}) {
@@ -723,6 +727,7 @@ function computeOnsetDatesAllYears(dailySeries, options = {}, years = null) {
       const days = byYear[year] || [];
       const yearOptions = { ...options };
       if (yearOptions.startDayOfYear === undefined) yearOptions.startDayOfYear = dateStringToDayOfYear(`${year}0501`); // 1 May, leap-safe
+      if (yearOptions.completeThroughDay === undefined) yearOptions.completeThroughDay = dateStringToDayOfYear(`${year}0930`); // 30 Sep, leap-safe
       const detail = days.length ? detectOnsetDetailed(days, yearOptions) : { day: null, status: 'insufficient_data' };
       return {
         year,

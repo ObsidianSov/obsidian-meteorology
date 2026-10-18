@@ -30,8 +30,8 @@ treat the historical numbers as exploratory, not as research results.
 - `index.src.html`: the source of the page (interface, API calls, charts)
 - `climate_math.js`, `trend_stats.js`, `rainfall_onset.js`, `knowledge_layer.js`: scientific modules (one copy each, tested)
 - `build.js`: combines `index.src.html` and the modules into `index.html`
-- `test_*.js`: unit tests; `run_tests.js` runs all of them
-- `docs/`: audit, method notes (`onset-method.md`, `trend-method.md`) and project status
+- `test_*.js`: unit tests, including `test_pipeline_golden.js` (whole pipeline vs independent Python results in `fixtures/`); `run_tests.js` runs all of them
+- `docs/`: audit, method notes (`onset-method.md`, `trend-method.md`), validation record and project status
 
 ## Working on the code
 
