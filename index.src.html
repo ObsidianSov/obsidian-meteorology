@@ -214,6 +214,8 @@
 <script src="knowledge_layer.js"></script>
 <script src="climate_math.js"></script>
 <script src="trend_stats.js"></script>
+<script src="cache_store.js"></script>
+<script src="request_tools.js"></script>
 <script src="data_sources.js"></script>
 <script src="source_compare.js"></script>
 <script src="rainfall_onset.js"></script>
@@ -242,14 +244,15 @@ async function loadWeather(lat, lon) {
     `&timezone=Africa%2FLagos`;
 
   try {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`API returned status ${response.status}`);
-    const data = await response.json();
+    const data = await fetchJsonWithRetry(url, {
+      label: "Open-Meteo", timeoutMs: 20000,
+      onRetry: (n) => { content.innerHTML = `<div class="status">Open-Meteo did not answer properly. Trying again (${n} of 2)...</div>`; }
+    });
     latestData = data;
     render();
   } catch (err) {
     content.innerHTML = `<div class="error">
-      Could not load live weather data: ${err.message}.<br>
+      Could not load live weather data: ${escapeHtml(err.message)}.<br>
       Check your internet connection and try again — this prototype requires
       a live connection to Open-Meteo's free API.
     </div>`;
@@ -423,7 +426,13 @@ document.getElementById("locationSelect").addEventListener("change", (e) => {
 let rainChart = null;
 let tempChart = null;
 let onsetChart = null;
-let historicalState = null;   // the loaded data, kept in memory so switching views does not download it again
+let historicalState = null;
+
+function browserStorage() {
+  // Some browsers block storage for local files; then the saved copies live in memory only.
+  try { const s = window.localStorage; s.setItem("om-test", "1"); s.removeItem("om-test"); return s; } catch (e) { return null; }
+}
+const dataCache = createCache(browserStorage());   // the loaded data, kept in memory so switching views does not download it again
 
 function escapeHtml(text) {
   return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -445,7 +454,7 @@ function showHistorical() {
   for (const id of ["histStartYear", "histEndYear"]) document.getElementById(id).max = lastCompleteYear;
 })();
 
-async function loadHistorical() {
+async function loadHistorical(forceRefresh = false) {
   const resultsDiv = document.getElementById("historical-results");
   const startYear = document.getElementById("histStartYear").value;
   const endYear = document.getElementById("histEndYear").value;
@@ -459,9 +468,18 @@ async function loadHistorical() {
     `&parameters=T2M,PRECTOTCORR&community=AG&format=JSON`;
 
   try {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`API returned status ${response.status}`);
-    const data = await response.json();
+    const got = await getJsonCached(url, {
+      cache: dataCache, maxAgeMs: DEFAULT_MAX_AGE_MS, force: forceRefresh === true,
+      fetchJson: (u) => fetchJsonWithRetry(u, {
+        label: "NASA POWER", timeoutMs: 60000,
+        onRetry: (n) => { resultsDiv.innerHTML = `<div class="status">NASA POWER did not answer properly. Trying again (${n} of 2)...</div>`; }
+      }),
+      validate: (d) => {
+        const p = d && d.properties && d.properties.parameter;
+        if (!p || !p.T2M || !p.PRECTOTCORR) throw new Error("NASA POWER returned an answer without the expected data");
+      }
+    });
+    const data = got.data;
 
     const rawTemp = data.properties.parameter.T2M;
     const rawPrecip = data.properties.parameter.PRECTOTCORR;
@@ -499,7 +517,8 @@ async function loadHistorical() {
     const onsetTrend = analyzeTrend(validOnsetPoints);
 
     historicalState = {
-      key: historicalKey(), lat, lon, startY, endY, retrievedAt: new Date(), rainSel, tempSel, comparison: null,
+      key: historicalKey(), lat, lon, startY, endY, retrievedAt: new Date(got.savedAt), fromCache: got.fromCache,
+      forceCompare: forceRefresh === true, compareAttempted: false, rainSel, tempSel, comparison: null,
       args: [annualRain, annualTemp, rainTrend, tempTrend, wettestYear, driestYear, hottestYear, coldestYear,
              onsetResults, onsetStats, onsetTrend, rainSel, tempSel]
     };
@@ -534,25 +553,29 @@ function renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
         Missing days are never replaced by zeros; years with too many missing days are left out of totals, trends and records.
       </div>
     </div>`;
+  const retrievedText = historicalState
+    ? `retrieved ${historicalState.retrievedAt.toLocaleString()}${historicalState.fromCache ? `, saved copy ${describeAge(Date.now() - historicalState.retrievedAt.getTime())} old` : ""}`
+    : "retrieved just now";
   const dataNoteCard = `
     <div class="card" style="margin-bottom:14px;">
       <div class="card-label">About this data</div>
       <div class="explain">
         Historical values are ${DATA_SOURCES.nasa_power.name} daily estimates for the chosen coordinates
-        (retrieved ${historicalState ? historicalState.retrievedAt.toLocaleString() : "just now"}).
+        (${retrievedText}).
         ${DATA_SOURCES.nasa_power.typeLabel}. ${DATA_SOURCES.nasa_power.origin} Trends use the Mann-Kendall test with
         Sen's slope at the 5% level, and a trend is only reported when the test supports it and at least
         ${MIN_YEARS_FOR_TREND} years are usable.
       </div>
+      ${historicalState && historicalState.fromCache ? '<button id="refreshBtn" class="tier-btn" style="margin-top:8px;">Download a fresh copy</button>' : ""}
     </div>`;
   const secondSourceCard = `
     <div class="card" style="margin-bottom:14px;">
       <div class="card-label">Second source check</div>
       <div class="explain">
-        Compare these results with ${DATA_SOURCES.era5_open_meteo.name}: a different reanalysis. Agreement between
-        two sources makes a result more trustworthy; disagreement is a warning.
+        These results are checked automatically against ${DATA_SOURCES.era5_open_meteo.name}: a different reanalysis.
+        Agreement between two sources makes a result more trustworthy; disagreement is a warning.
       </div>
-      <button id="compareBtn" class="tier-btn" style="margin-top:8px; background:var(--cyan); color:#0a0e17;">Compare with ERA5</button>
+      <button id="compareBtn" class="tier-btn" style="margin-top:8px; background:var(--cyan); color:#0a0e17;">Check again with a fresh download</button>
       <div id="compareResult" style="margin-top:10px;"></div>
     </div>`;
   const insufficientNote = onsetStats.insufficientYears.length
@@ -635,6 +658,7 @@ function renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
     </table>`;
 
   resultsDiv.innerHTML = `
+    <div id="crossCheckBanner"></div>
     ${completenessCard}
     ${dataNoteCard}
     ${secondSourceCard}
@@ -748,32 +772,55 @@ function renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
   bindComparison();
 }
 
-async function compareSources() {
+async function compareSources(force = false) {
   const st = historicalState;
   const box = document.getElementById("compareResult");
-  if (!st) return;
-  box.innerHTML = '<div class="status">Fetching ERA5 history from Open-Meteo...</div>';
+  if (!st || !box) return;
+  box.innerHTML = '<div class="status">Checking against ERA5 (Open-Meteo)...</div>';
   try {
-    const response = await fetch(buildArchiveUrl(st.lat, st.lon, st.startY, st.endY));
-    if (!response.ok) {
-      throw new Error(`the service returned status ${response.status}` + (response.status === 429 ? " (too many requests: try again later or choose a shorter year range)" : ""));
-    }
-    const parsed = parseArchiveResponse(await response.json());
-    if (!parsed.ok) throw new Error(parsed.error);
+    const got = await getJsonCached(buildArchiveUrl(st.lat, st.lon, st.startY, st.endY), {
+      cache: dataCache, maxAgeMs: DEFAULT_MAX_AGE_MS, force,
+      fetchJson: (u) => fetchJsonWithRetry(u, {
+        label: "Open-Meteo (ERA5)", timeoutMs: 45000,
+        onRetry: (n) => { box.innerHTML = `<div class="status">Open-Meteo did not answer properly. Trying again (${n} of 2)...</div>`; }
+      }),
+      validate: (d) => { const p = parseArchiveResponse(d); if (!p.ok) throw new Error(p.error); }
+    });
+    if (historicalState !== st) return;                     // the user loaded something else while we waited
+    const parsed = parseArchiveResponse(got.data);
     const eraRainSel = selectCompleteYears(aggregateAnnualRainfall(parsed.rain), st.startY, st.endY);
     const eraTempSel = selectCompleteYears(aggregateAnnualMeanTemp(parsed.temp), st.startY, st.endY);
     st.comparison = {
-      retrievedAt: new Date(), eraRainSel, eraTempSel,
+      retrievedAt: new Date(got.savedAt), fromCache: got.fromCache, eraRainSel, eraTempSel,
       rainCmp: buildComparison(st.rainSel.eligible.map(y => ({ year: y.year, value: y.total })), eraRainSel.eligible.map(y => ({ year: y.year, value: y.total }))),
       tempCmp: buildComparison(st.tempSel.eligible.map(y => ({ year: y.year, value: y.mean })), eraTempSel.eligible.map(y => ({ year: y.year, value: y.mean })))
     };
     showComparison();
+    updateCrossCheckBanner();
     try { applyComparisonOverlay(); } catch (overlayError) { /* the chart overlay is optional: the comparison text stays */ }
   } catch (err) {
+    if (historicalState !== st) return;
     st.comparison = null;
-    box.innerHTML = `<div class="error">Could not load the second source: ${escapeHtml(String(err.message).replace(/\.$/, ""))}.<br>
-      Your NASA POWER results above are not affected. Check your connection and try again.</div>`;
+    updateCrossCheckBanner();
+    box.innerHTML = `<div class="error">Could not run the second-source check: ${escapeHtml(String(err.message).replace(/\.$/, ""))}.<br>
+      Your NASA POWER results are not affected, but they have not been cross-checked. Use the button to try again.</div>`;
   }
+}
+
+function updateCrossCheckBanner() {
+  const el = document.getElementById("crossCheckBanner");
+  if (!el) return;
+  const c = historicalState && historicalState.comparison;
+  const parts = [];
+  const plural = (n) => `${n} year${n === 1 ? "" : "s"}`;
+  if (c && c.rainCmp.verdict === "diverge") parts.push(`rainfall: NASA POWER and ERA5 disagree strongly in ${plural(c.rainCmp.flagged.length)} (${c.rainCmp.flagged.join(", ")})`);
+  if (c && c.tempCmp.verdict === "diverge") parts.push(`temperature: NASA POWER and ERA5 disagree strongly in ${plural(c.tempCmp.flagged.length)} (${c.tempCmp.flagged.join(", ")})`);
+  el.innerHTML = parts.length ? `
+    <div class="card" style="margin-bottom:14px;">
+      <div class="card-label">Warning: second-source check</div>
+      <div class="explain" style="border-left-color:#f5a623;">${escapeHtml(parts.join("; "))}.
+        Results below that depend on those years, especially trends, should not be relied on yet.</div>
+    </div>` : "";
 }
 
 function showComparison() {
@@ -794,7 +841,7 @@ function showComparison() {
     <div class="explain"${warn(c.tempCmp)}>${escapeHtml(tempText)}</div>
     ${table}
     <div class="explain" style="margin-top:8px;">
-      ${DATA_SOURCES.era5_open_meteo.name} retrieved ${c.retrievedAt.toLocaleString()}. ${DATA_SOURCES.era5_open_meteo.typeLabel}.
+      ${DATA_SOURCES.era5_open_meteo.name} retrieved ${c.retrievedAt.toLocaleString()}${c.fromCache ? `, saved copy ${describeAge(Date.now() - c.retrievedAt.getTime())} old` : ""}. ${DATA_SOURCES.era5_open_meteo.typeLabel}.
       Years used: rainfall ${c.eraRainSel.eligible.length} of ${c.eraRainSel.eligible.length + c.eraRainSel.excluded.length},
       temperature ${c.eraTempSel.eligible.length} of ${c.eraTempSel.eligible.length + c.eraTempSel.excluded.length}.
     </div>`;
@@ -822,11 +869,15 @@ function applyComparisonOverlay() {
 
 function bindComparison() {
   const btn = document.getElementById("compareBtn");
-  if (btn) btn.addEventListener("click", compareSources);
-  if (historicalState && historicalState.comparison) { showComparison(); applyComparisonOverlay(); }
+  if (btn) btn.addEventListener("click", () => compareSources(true));
+  const refresh = document.getElementById("refreshBtn");
+  if (refresh) refresh.addEventListener("click", () => loadHistorical(true));
+  const st = historicalState;
+  if (st && st.comparison) { showComparison(); applyComparisonOverlay(); updateCrossCheckBanner(); }
+  else if (st && !st.compareAttempted) { st.compareAttempted = true; compareSources(st.forceCompare === true); }   // runs by itself, once
 }
 
-document.getElementById("loadHistoricalBtn").addEventListener("click", loadHistorical);
+document.getElementById("loadHistoricalBtn").addEventListener("click", () => loadHistorical(false));
 
 document.querySelectorAll('[data-mode]').forEach(btn => {
   btn.addEventListener("click", () => {

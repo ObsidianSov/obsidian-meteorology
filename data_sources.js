@@ -19,7 +19,8 @@ const DATA_SOURCES = {
     knownLimitations: [
       "Estimate for a grid cell, not a point measurement",
       "Reanalysis precipitation can have biases and discontinuities",
-      "Katsina rainfall for 2020 to 2024 looks anomalous (see STATUS.md)"
+      "Katsina rainfall for 2020 to 2024 (983 to 1,785 mm a year) is not seen in ERA5 (320 to 544 mm); found on 18 Oct 2026, cause unknown, awaiting station data",
+      "Katsina rainfall runs about 220 mm a year above ERA5 even before 2020, so the two disagree on the level"
     ]
   },
   era5_open_meteo: {

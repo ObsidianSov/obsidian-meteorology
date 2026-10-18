@@ -20,7 +20,8 @@ treat the historical numbers as exploratory, not as research results.
 | Trend test (Mann-Kendall with Sen's slope), wettest/driest/hottest/coolest year | Experimental |
 | Rainy-season onset detection and variability | Experimental |
 | Data-completeness checks, significance testing | Experimental |
-| Second-source check: compare NASA POWER with ERA5 (Open-Meteo) | Experimental (not yet confirmed against the live service) |
+| Automatic second-source check: NASA POWER vs ERA5 (Open-Meteo), with a warning banner | Experimental |
+| Saved copies of downloads, retries and clear error messages | Implemented |
 | CSV export | Planned |
 | Instruments library, learning centre, remote sensing | Planned |
 | Accounts and roles | Planned (needs a backend) |
@@ -29,7 +30,7 @@ treat the historical numbers as exploratory, not as research results.
 
 - `index.html`: the app, a single self-contained file (open it any way you like). **Generated: never edit it directly.**
 - `index.src.html`: the source of the page (interface, API calls, charts)
-- `climate_math.js`, `trend_stats.js`, `rainfall_onset.js`, `knowledge_layer.js`, `data_sources.js`, `source_compare.js`: modules (one copy each, tested)
+- `climate_math.js`, `trend_stats.js`, `rainfall_onset.js`, `knowledge_layer.js`, `data_sources.js`, `source_compare.js`, `cache_store.js`, `request_tools.js`: modules (one copy each, tested)
 - `build.js`: combines `index.src.html` and the modules into `index.html`
 - `test_*.js`: unit tests, including `test_pipeline_golden.js` (whole pipeline vs independent Python results in `fixtures/`); `run_tests.js` runs all of them
 - `docs/`: audit, method notes (`onset-method.md`, `trend-method.md`), data sources (`data-sources.md`), validation record and project status

@@ -7,7 +7,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const MODULES = ["knowledge_layer.js", "climate_math.js", "trend_stats.js", "data_sources.js", "source_compare.js", "rainfall_onset.js"];
+const MODULES = ["knowledge_layer.js", "climate_math.js", "trend_stats.js", "cache_store.js", "request_tools.js", "data_sources.js", "source_compare.js", "rainfall_onset.js"];
 
 function build(dir = __dirname) {
   let html = fs.readFileSync(path.join(dir, "index.src.html"), "utf8");

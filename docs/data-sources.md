@@ -23,10 +23,25 @@ Audit of every data provider the app uses (Milestone 3). The machine-readable ve
 - The time each source was retrieved is shown on the page.
 - Loaded data is kept in memory, so switching between Student, Advanced and NiMET does not download it again.
 
+## Reliability (Milestone 3, step 2)
+
+- Every request has a time limit (NASA POWER 60 s, ERA5 45 s, live weather 20 s) and is retried up to
+  twice, with growing waits, for temporary problems: no connection, time-out, "too many requests" (429)
+  and server errors (5xx). A rejected request (other 4xx) or an unreadable answer is not retried.
+  Error messages say what happened and what to do.
+- Downloads are saved on the device for 7 days (localStorage when the browser allows it, otherwise in
+  memory). An answer is checked before it is saved, so bad data is never kept. The page shows the
+  retrieval time and, for a saved copy, its age, with a "Download a fresh copy" button.
+- The second-source check runs by itself after each load and shows a warning banner at the top when the
+  two sources disagree strongly. If it cannot run, the page says so: the NASA results are shown but marked
+  as not cross-checked.
+
 ## Known problems
 
-- NASA POWER rainfall for Katsina 2020 to 2024 looks anomalous (see `STATUS.md`). The second-source
-  check exists to test whether ERA5 shows the same jump.
+- **Found 18 Oct 2026:** NASA POWER rainfall for Katsina is 983 to 1,785 mm a year in 2020 to 2024;
+  ERA5 gives 320 to 544 mm for the same years, with no jump. Even before 2020 NASA runs about 220 mm
+  a year above ERA5. Neither source is verified. Station data (expected in about two months) will
+  decide. Until then the 1990 to 2024 NASA rainfall trend must not be quoted.
 - Both historical sources are reanalyses. Agreement between them is encouraging but they are not
   independent of all assumptions. A rain-gauge-based source (for example CHIRPS) or station data would be stronger.
 - The ERA5 request uses the service's default model selection, so the exact model behind each day
