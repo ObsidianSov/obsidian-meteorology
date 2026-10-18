@@ -205,7 +205,7 @@
 </div>
 
 <div class="footer">
-  Live data: <a href="https://open-meteo.com" target="_blank">Open-Meteo</a> (free, no API key required, CC BY 4.0)
+  Live data: <a href="https://open-meteo.com" target="_blank">Open-Meteo</a> (free, no API key required, CC BY 4.0). Values are model-derived estimates, not station observations
   &nbsp;•&nbsp; Obsidian Meteorology Prototype v0.1
 </div>
 
@@ -213,6 +213,7 @@
 <!-- Scientific modules: single source of truth, also loaded by the unit tests -->
 <script src="knowledge_layer.js"></script>
 <script src="climate_math.js"></script>
+<script src="trend_stats.js"></script>
 <script src="rainfall_onset.js"></script>
 <script>
 // Knowledge layer (KNOWLEDGE_BASE, getExplanation, getVariableInfo) lives in knowledge_layer.js
@@ -457,8 +458,8 @@ async function loadHistorical() {
       throw new Error(`fewer than 3 years have enough valid data (rainfall ${annualRain.length}, temperature ${annualTemp.length}) — choose a different year range`);
     }
 
-    const rainTrend = linearRegression(annualRain.map(y => ({ year: y.year, value: y.total })));
-    const tempTrend = linearRegression(annualTemp.map(y => ({ year: y.year, value: y.mean })));
+    const rainTrend = analyzeTrend(annualRain.map(y => ({ year: y.year, value: y.total })));
+    const tempTrend = analyzeTrend(annualTemp.map(y => ({ year: y.year, value: y.mean })));
 
     const wettestYear = findExtremeYear(annualRain, 'total', 'max');
     const driestYear = findExtremeYear(annualRain, 'total', 'min');
@@ -472,7 +473,7 @@ async function loadHistorical() {
     const validOnsetPoints = onsetResults
       .filter(r => r.onsetDayOfYear !== null)
       .map(r => ({ year: r.year, value: r.onsetDayOfYear }));
-    const onsetTrend = linearRegression(validOnsetPoints);
+    const onsetTrend = analyzeTrend(validOnsetPoints);
 
     renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
                       wettestYear, driestYear, hottestYear, coldestYear,
@@ -506,13 +507,20 @@ function renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
         Missing days are never replaced by zeros; years with too many missing days are left out of totals, trends and records.
       </div>
     </div>`;
+  const dataNoteCard = `
+    <div class="card" style="margin-bottom:14px;">
+      <div class="card-label">About this data</div>
+      <div class="explain">
+        Historical values are NASA POWER daily estimates for the chosen coordinates: gridded model and
+        satellite-derived data, not readings from a weather station. Trends use the Mann-Kendall test with
+        Sen's slope at the 5% level, and a trend is only reported when the test supports it and at least
+        ${MIN_YEARS_FOR_TREND} years are usable.
+      </div>
+    </div>`;
   const insufficientNote = onsetStats.insufficientYears.length
     ? `${onsetStats.insufficientYears.length} year(s) (${onsetStats.insufficientYears.join(", ")}) had too much missing data to decide the onset.`
     : "";
 
-  const rainDirection = rainTrend.slope > 0 ? "increasing" : rainTrend.slope < 0 ? "decreasing" : "flat";
-  const tempDirection = tempTrend.slope > 0 ? "warming" : tempTrend.slope < 0 ? "cooling" : "flat";
-  const onsetDirection = onsetTrend.slope > 0 ? "later" : onsetTrend.slope < 0 ? "earlier" : "roughly stable";
 
   const validOnsetResults = onsetResults.filter(r => r.onsetDayOfYear !== null);
   const earliestOnset = validOnsetResults.length
@@ -520,30 +528,35 @@ function renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
   const latestOnset = validOnsetResults.length
     ? validOnsetResults.reduce((a, b) => a.onsetDayOfYear > b.onsetDayOfYear ? a : b) : null;
 
+  const verdictLabel = (t) => ({ increasing: "significant increase", decreasing: "significant decrease", none: "no significant trend", too_few: "too few years to test" })[t.verdict];
+  const senText = (t, digits, unit) => (t.verdict === "too_few" || t.slope === null) ? "n/a"
+    : `${signedNumber(t.slope, digits)} ${unit} (${signedNumber(t.slopeLow, digits)} to ${signedNumber(t.slopeHigh, digits)})`;
+  const mkText = (t) => (t.verdict === "too_few" || t.p === null) ? "n/a" : `Z = ${t.z.toFixed(2)}, ${formatPValue(t.p)}`;
+  const regRain = linearRegression(annualRain.map(y => ({ year: y.year, value: y.total })));
+  const regTemp = linearRegression(annualTemp.map(y => ({ year: y.year, value: y.mean })));
+  const meanOnsetLabel = onsetStats.yearsWithValidOnset > 0 ? formatDayOfYear(onsetStats.mean) : "n/a";
+
   let studentSummary = `
     <div class="explain">
-      Over this period, annual rainfall has been <strong>${rainDirection}</strong>
-      by roughly ${Math.abs(rainTrend.slope).toFixed(1)} mm per year on average.
-      The wettest year on record here was <strong>${wettestYear.year}</strong>
+      ${describeTrend(rainTrend, { label: "annual rainfall", unit: "mm", digits: 1 })}
+      The wettest year in this dataset was <strong>${wettestYear.year}</strong>
       (${wettestYear.total} mm), and the driest was <strong>${driestYear.year}</strong>
       (${driestYear.total} mm).
     </div>
     <div class="explain">
-      Average temperature has been <strong>${tempDirection}</strong> by roughly
-      ${Math.abs(tempTrend.slope).toFixed(3)}°C per year. The hottest year on
-      average was <strong>${hottestYear.year}</strong> (${hottestYear.mean}°C),
+      ${describeTrend(tempTrend, { label: "annual mean temperature", unit: "°C", digits: 3, upPhrase: "warming trend", downPhrase: "cooling trend" })}
+      The hottest year on average was <strong>${hottestYear.year}</strong> (${hottestYear.mean}°C),
       the coolest was <strong>${coldestYear.year}</strong> (${coldestYear.mean}°C).
     </div>
     <div class="explain">
       ${validOnsetResults.length > 0 ? `
         The rainy season onset was detected in <strong>${onsetStats.yearsWithValidOnset}</strong>
-        of the <strong>${onsetStats.yearsTotal}</strong> years in this range, arriving
-        <strong>${onsetDirection}</strong> over time (about ${Math.abs(onsetTrend.slope).toFixed(2)}
-        days/year). Onset ranged from as early as
+        of the <strong>${onsetStats.yearsTotal}</strong> years in this range. On average it arrived
+        around <strong>${meanOnsetLabel}</strong>, with a year-to-year spread (standard deviation) of
+        about <strong>${onsetStats.stdDev} days</strong>. It ranged from as early as
         <strong>${earliestOnset.onsetDate}</strong> to as late as
-        <strong>${latestOnset.onsetDate}</strong>, with year-to-year timing varying by
-        about <strong>${onsetStats.cv}%</strong> — the higher this number, the less
-        predictable planting timing has been.
+        <strong>${latestOnset.onsetDate}</strong>.
+        ${describeTrend(onsetTrend, { label: "the rainy-season onset date", unit: "days", digits: 2, upPhrase: "trend towards later onset", downPhrase: "trend towards earlier onset" })}
       ` : `No reliable rainy season onset could be detected in this year range from this dataset.`}
     </div>
     ${insufficientNote ? `<div class="explain">${insufficientNote}</div>` : ""}`;
@@ -551,22 +564,26 @@ function renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
   let advancedSummary = `
     <table class="advanced-table">
       <tr><th>Metric</th><th>Rainfall</th><th>Temperature</th></tr>
-      <tr><td>Trend (slope)</td><td>${rainTrend.slope} mm/year</td><td>${tempTrend.slope} °C/year</td></tr>
-      <tr><td>R²</td><td>${rainTrend.r2}</td><td>${tempTrend.r2}</td></tr>
+      <tr><td>Years used (n)</td><td>${rainTrend.n}</td><td>${tempTrend.n}</td></tr>
+      <tr><td>Trend (Mann-Kendall, 5% level)</td><td>${verdictLabel(rainTrend)}</td><td>${verdictLabel(tempTrend)}</td></tr>
+      <tr><td>Mann-Kendall Z, p-value</td><td>${mkText(rainTrend)}</td><td>${mkText(tempTrend)}</td></tr>
+      <tr><td>Sen's slope (95% range)</td><td>${senText(rainTrend, 1, "mm/year")}</td><td>${senText(tempTrend, 3, "°C/year")}</td></tr>
+      <tr><td>Linear regression slope, R² (comparison only)</td><td>${regRain.slope} mm/year, R² ${regRain.r2}</td><td>${regTemp.slope} °C/year, R² ${regTemp.r2}</td></tr>
       <tr><td>Wettest / Hottest year</td><td>${wettestYear.year} (${wettestYear.total}mm)</td><td>${hottestYear.year} (${hottestYear.mean}°C)</td></tr>
       <tr><td>Driest / Coolest year</td><td>${driestYear.year} (${driestYear.total}mm)</td><td>${coldestYear.year} (${coldestYear.mean}°C)</td></tr>
     </table>
     <table class="advanced-table" style="margin-top:10px;">
       <tr><th colspan="2">Rainy Season Onset (Sivakumar 1988 criterion: from 1 May, at least 20 mm in 3 consecutive days, no dry spell longer than 7 days in the following 30 days; dry day = under 1 mm)</th></tr>
-      <tr><td>Onset trend</td><td>${onsetTrend.slope} days/year (${onsetDirection}), R²=${onsetTrend.r2}</td></tr>
-      <tr><td>Mean onset day-of-year</td><td>${onsetStats.mean || 'n/a'} (std dev ${onsetStats.stdDev || 'n/a'} days)</td></tr>
-      <tr><td>Onset variability (CV)</td><td>${onsetStats.cv || 'n/a'}%</td></tr>
       <tr><td>Years with detected onset</td><td>${onsetStats.yearsWithValidOnset} / ${onsetStats.yearsTotal}${onsetStats.noOnsetYears.length ? ` (no onset: ${onsetStats.noOnsetYears.join(', ')})` : ''}${onsetStats.insufficientYears.length ? ` (insufficient data: ${onsetStats.insufficientYears.join(', ')})` : ''}</td></tr>
+      <tr><td>Mean onset</td><td>${meanOnsetLabel}${onsetStats.yearsWithValidOnset > 0 ? ` (day ${onsetStats.mean}), standard deviation ${onsetStats.stdDev} days` : ''}</td></tr>
+      <tr><td>Onset trend (Mann-Kendall, 5% level)</td><td>${verdictLabel(onsetTrend)}${onsetTrend.p !== null && onsetTrend.verdict !== "too_few" ? `, ${mkText(onsetTrend)}` : ''}</td></tr>
+      <tr><td>Sen's slope (95% range)</td><td>${senText(onsetTrend, 2, "days/year")} (positive = later)</td></tr>
       <tr><td>Earliest / Latest onset</td><td>${earliestOnset ? earliestOnset.onsetDate : 'n/a'} / ${latestOnset ? latestOnset.onsetDate : 'n/a'}</td></tr>
     </table>`;
 
   resultsDiv.innerHTML = `
     ${completenessCard}
+    ${dataNoteCard}
     <div class="card" style="margin-bottom:14px;">
       <div class="card-label">Summary (${currentTier} view)</div>
       ${currentTier === 'student' ? studentSummary : advancedSummary}

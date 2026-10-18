@@ -51,6 +51,7 @@ with some missing days still counts.
   dry-spell lengths used in some Nigerian studies). Results are not comparable
   across definitions.
 - Cessation of the rains is not implemented yet.
+- Leap years: onset is stored as a day-of-year, so a date after 28 February has a day number one higher in a leap year. Mean and standard deviation of onset can be off by at most about one day because of this. Onset dates themselves are exact.
 - Changes in step 3: earlier versions searched from 1 March and allowed 10 dry
   days, and could report the onset 1 to 2 days early. Onset values will therefore
   differ from earlier versions.

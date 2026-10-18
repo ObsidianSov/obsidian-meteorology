@@ -30,6 +30,14 @@ function dayOfYearToDateString(year, dayOfYear) {
   return `${date.getUTCFullYear()}-${mm}-${dd}`;
 }
 
+function formatDayOfYear(dayOfYear) {
+  // "1 May" style label for a day-of-year. Uses a non-leap reference year, so in leap years the
+  // label for days after 28 February is one day later than the real date (documented limit).
+  const iso = dayOfYearToDateString(2021, Math.round(dayOfYear));
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return `${parseInt(iso.slice(8, 10), 10)} ${months[parseInt(iso.slice(5, 7), 10) - 1]}`;
+}
+
 function groupDailyByYear(dailySeries) {
   // dailySeries: output of parseNasaPowerSeries — [{date, year, value}]
   const byYear = {};
@@ -159,6 +167,7 @@ function onsetVariability(onsetResults) {
 if (typeof module !== "undefined") module.exports = {
   dateStringToDayOfYear,
   dayOfYearToDateString,
+  formatDayOfYear,
   groupDailyByYear,
   detectOnsetDetailed,
   detectOnsetForYear,

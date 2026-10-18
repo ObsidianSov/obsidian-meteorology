@@ -6,7 +6,7 @@ const vm = require("vm");
 const html = fs.readFileSync("./index.src.html", "utf8");   // the source page: loads modules by <script src>
 const built = fs.readFileSync("./index.html", "utf8");       // the shipped single file
 const { build, MODULES: BUILD_MODULES } = require("./build.js");
-const MODULES = ["knowledge_layer.js", "climate_math.js", "rainfall_onset.js"];
+const MODULES = ["knowledge_layer.js", "climate_math.js", "trend_stats.js", "rainfall_onset.js"];
 
 let passed = 0, total = 0;
 function check(name, condition) {

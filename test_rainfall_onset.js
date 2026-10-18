@@ -1,6 +1,7 @@
 const {
   dateStringToDayOfYear,
   dayOfYearToDateString,
+  formatDayOfYear,
   groupDailyByYear,
   detectOnsetDetailed,
   detectOnsetForYear,
@@ -176,6 +177,14 @@ check("1 May is the first search day in both a leap year (2020) and a normal yea
 const aprilRain = (year) => fullYearSeries(year, d => (d >= (year % 4 === 0 ? 119 : 118) && d <= (year % 4 === 0 ? 121 : 120)) ? 8 : 0); // 28-30 April only
 const aprilRes = computeOnsetDatesAllYears([...aprilRain(2020), ...aprilRain(2021)], { maxDrySpellDays: 40 });
 check("a 24 mm burst on 28-30 April is before the search start: no onset in 2020 or 2021", aprilRes.length === 2 && aprilRes.every(y => y.onsetDate === null && y.status === 'none'));
+
+
+// ---------- Milestone 1 step 4: onset shown as a date and a spread in days ----------
+check("formatDayOfYear: day 1 is '1 Jan', day 121 is '1 May', day 152 is '1 Jun', day 365 is '31 Dec'",
+  formatDayOfYear(1) === "1 Jan" && formatDayOfYear(121) === "1 May" && formatDayOfYear(152) === "1 Jun" && formatDayOfYear(365) === "31 Dec");
+check("formatDayOfYear rounds a mean day-of-year (151.6 -> '1 Jun')", formatDayOfYear(151.6) === "1 Jun");
+const sdCheck = onsetVariability([{ year: 2019, onsetDayOfYear: 150, status: 'detected' }, { year: 2020, onsetDayOfYear: 160, status: 'detected' }, { year: 2021, onsetDayOfYear: 170, status: 'detected' }]);
+check("onset spread is available in days: mean 160, standard deviation about 8.16 days", sdCheck.mean === 160 && Math.abs(sdCheck.stdDev - 8.16) < 0.01);
 
 console.log(`\nRESULTS: ${passed}/${total} tests passed`);
 process.exit(passed === total ? 0 : 1);
