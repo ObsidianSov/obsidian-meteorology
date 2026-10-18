@@ -16,6 +16,19 @@ What has been checked, how, and what has not.
 
 All of these run on every `node run_tests.js` (`test_trend_stats.js`, `test_pipeline_golden.js`).
 
+## Milestone 3 (18 Oct 2026)
+
+| Component | Checked against | Result |
+|---|---|---|
+| Pearson r and Spearman rho between two sources | `scipy.stats.pearsonr` and `spearmanr` on 4 series | agree to 1e-10 |
+| Fences for unusual source differences | `numpy.percentile` | agree |
+| ERA5 (Open-Meteo archive) response parser | fixtures shaped like the documented response, plus error, unit and missing-value cases | passes |
+| Request and response with the **live** Open-Meteo archive | not yet checked from this environment (no network access to it) | **to be confirmed on a phone** |
+
+False-alarm rate: a simulation (35 years, normal noise) showed the usual 1.5 x IQR fence would
+wrongly report "sources disagree" in about 36% of comparisons, so the comparison uses 3 x IQR
+(about 1%).
+
 ## What this does and does not prove
 
 - The statistics (Mann-Kendall, Sen's slope, quartiles) were checked against independent,

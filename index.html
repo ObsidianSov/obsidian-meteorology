@@ -597,6 +597,213 @@ if (typeof module !== "undefined") module.exports = {
 };
 </script>
 <script>
+// ===== data_sources.js (inlined by build.js: edit the module file, not this copy) =====
+// Data sources: what each source is, how to request it, and how to read its answer safely.
+// Pure functions — no network, testable in isolation. See docs/data-sources.md.
+
+const DATA_SOURCES = {
+  nasa_power: {
+    id: "nasa_power",
+    name: "NASA POWER",
+    provider: "NASA Langley Research Center (POWER project)",
+    product: "Daily point data, agroclimatology community (AG)",
+    typeLabel: "Gridded estimate for the chosen coordinates (not a station observation)",
+    origin: "Most meteorological parameters come from the MERRA-2 reanalysis; an IMERG-based precipitation option also exists (per a NASA POWER evaluation poster).",
+    variables: {
+      T2M: { name: "Air temperature at 2 m", unit: "°C" },
+      PRECTOTCORR: { name: "Precipitation (corrected)", unit: "mm/day" }
+    },
+    coverage: "From 1981 to near the present",
+    resolution: "Not yet verified by this project",
+    licence: "Not yet verified by this project: check NASA POWER's terms of use",
+    knownLimitations: [
+      "Estimate for a grid cell, not a point measurement",
+      "Reanalysis precipitation can have biases and discontinuities",
+      "Katsina rainfall for 2020 to 2024 looks anomalous (see STATUS.md)"
+    ]
+  },
+  era5_open_meteo: {
+    id: "era5_open_meteo",
+    name: "ERA5 via Open-Meteo",
+    provider: "Open-Meteo Historical Weather API (data from ECMWF ERA5 / ERA5-Land)",
+    product: "Daily archive, default model selection (ERA5-based)",
+    typeLabel: "Reanalysis (a computer model constrained by observations), not a station observation",
+    origin: "ERA5 and ERA5-Land reanalysis from ECMWF, served by Open-Meteo",
+    variables: {
+      temperature_2m_mean: { name: "Mean air temperature at 2 m", unit: "°C" },
+      precipitation_sum: { name: "Precipitation sum (rain, showers and snow)", unit: "mm" }
+    },
+    coverage: "From 1940 to about two days before today",
+    resolution: "About 9 to 25 km (ERA5 and ERA5-Land), per Open-Meteo",
+    licence: "CC BY 4.0 with attribution (Open-Meteo)",
+    knownLimitations: [
+      "A reanalysis, not truth: tropical rainfall in reanalyses can be biased",
+      "The exact model used for each day is chosen by the service"
+    ]
+  },
+  open_meteo_forecast: {
+    id: "open_meteo_forecast",
+    name: "Open-Meteo forecast",
+    provider: "Open-Meteo",
+    product: "Current conditions and 7-day forecast",
+    typeLabel: "Weather-model values (not station observations)",
+    origin: "Numerical weather prediction models, selected by the service",
+    variables: {
+      temperature_2m: { name: "Air temperature at 2 m", unit: "°C" },
+      precipitation_sum: { name: "Daily precipitation", unit: "mm" }
+    },
+    coverage: "Now and the next 7 days",
+    resolution: "Not yet verified by this project",
+    licence: "CC BY 4.0 with attribution (Open-Meteo)",
+    knownLimitations: ["Model estimates, not measurements", "Forecast skill drops with lead time"]
+  }
+};
+
+const ARCHIVE_BASE_URL = "https://archive-api.open-meteo.com/v1/archive";
+const EARLIEST_ARCHIVE_YEAR = 1940;
+
+function buildArchiveUrl(lat, lon, startYear, endYear) {
+  const la = Number(lat), lo = Number(lon), sy = Number(startYear), ey = Number(endYear);
+  if (!Number.isFinite(la) || la < -90 || la > 90) throw new Error("latitude must be a number between -90 and 90");
+  if (!Number.isFinite(lo) || lo < -180 || lo > 180) throw new Error("longitude must be a number between -180 and 180");
+  if (!Number.isInteger(sy) || !Number.isInteger(ey)) throw new Error("start and end year must be whole numbers");
+  if (sy > ey) throw new Error("the start year must not be after the end year");
+  if (sy < EARLIEST_ARCHIVE_YEAR) throw new Error(`the archive starts in ${EARLIEST_ARCHIVE_YEAR}`);
+  return `${ARCHIVE_BASE_URL}?latitude=${la}&longitude=${lo}` +
+    `&start_date=${sy}-01-01&end_date=${ey}-12-31` +
+    `&daily=temperature_2m_mean,precipitation_sum`;
+}
+
+function parseArchiveResponse(json) {
+  // Returns { ok: true, rain, temp, missingRain, missingTemp } with series shaped like parseNasaPowerSeries output
+  // ([{date: 'YYYYMMDD', year, value}]), or { ok: false, error } with a message a person can act on.
+  // Missing or non-numeric days are dropped, never turned into zeros.
+  if (!json || typeof json !== "object") return { ok: false, error: "The service returned something that is not data." };
+  if (json.error) return { ok: false, error: json.reason ? `The service reported an error: ${json.reason}` : "The service reported an error." };
+  const d = json.daily;
+  if (!d || !Array.isArray(d.time)) return { ok: false, error: "The response has no daily data." };
+  const units = json.daily_units || {};
+  if (units.precipitation_sum !== undefined && units.precipitation_sum !== "mm")
+    return { ok: false, error: `Unexpected unit for precipitation: ${units.precipitation_sum} (expected mm).` };
+  if (units.temperature_2m_mean !== undefined && units.temperature_2m_mean !== "°C")
+    return { ok: false, error: `Unexpected unit for temperature: ${units.temperature_2m_mean} (expected °C).` };
+  for (const name of ["precipitation_sum", "temperature_2m_mean"]) {
+    if (!Array.isArray(d[name])) return { ok: false, error: `The response is missing ${name}.` };
+    if (d[name].length !== d.time.length) return { ok: false, error: `${name} does not line up with the dates.` };
+  }
+  const convert = (values) => {
+    const out = []; let missing = 0;
+    for (let i = 0; i < d.time.length; i++) {
+      const v = values[i], t = d.time[i];
+      if (typeof t !== "string" || !/^\d{4}-\d{2}-\d{2}/.test(t)) return null;
+      if (typeof v === "number" && Number.isFinite(v)) out.push({ date: t.slice(0, 10).replace(/-/g, ""), year: parseInt(t.slice(0, 4), 10), value: v });
+      else missing++;
+    }
+    return { series: out, missing };
+  };
+  const rain = convert(d.precipitation_sum), temp = convert(d.temperature_2m_mean);
+  if (!rain || !temp) return { ok: false, error: "The response contains a date that could not be read." };
+  return { ok: true, rain: rain.series, temp: temp.series, missingRain: rain.missing, missingTemp: temp.missing };
+}
+
+if (typeof module !== "undefined") module.exports = {
+  DATA_SOURCES,
+  ARCHIVE_BASE_URL,
+  EARLIEST_ARCHIVE_YEAR,
+  buildArchiveUrl,
+  parseArchiveResponse
+};
+</script>
+<script>
+// ===== source_compare.js (inlined by build.js: edit the module file, not this copy) =====
+// Comparing the same annual quantity from two data sources.
+// Pure functions — no network, testable in isolation. Needs trend_stats.js loaded first.
+// Method: line the series up by year, look at the year-by-year difference, and flag years where the
+// difference is far outside the usual spread (Tukey fences at 3 x IQR). No fixed thresholds are invented:
+// a year is flagged because it differs from how the two sources usually differ. The stricter 3 x IQR fence
+// is used (not 1.5) because with 1.5 about 36% of comparisons between consistent sources would show a
+// false disagreement (simulation, 35 years); with 3 about 1%.
+
+const COMPARE_FENCE_K = 3;
+
+function pearson(x, y) {
+  const n = x.length;
+  if (n < 3) return null;
+  const mx = x.reduce((a, b) => a + b, 0) / n, my = y.reduce((a, b) => a + b, 0) / n;
+  let sxy = 0, sxx = 0, syy = 0;
+  for (let i = 0; i < n; i++) { sxy += (x[i] - mx) * (y[i] - my); sxx += (x[i] - mx) ** 2; syy += (y[i] - my) ** 2; }
+  if (sxx === 0 || syy === 0) return null;
+  return sxy / Math.sqrt(sxx * syy);
+}
+
+function ranks(values) {
+  // Average ranks for ties (as scipy.stats.rankdata)
+  const idx = values.map((v, i) => [v, i]).sort((a, b) => a[0] - b[0]);
+  const out = new Array(values.length);
+  let i = 0;
+  while (i < idx.length) {
+    let j = i;
+    while (j + 1 < idx.length && idx[j + 1][0] === idx[i][0]) j++;
+    const avg = (i + j) / 2 + 1;
+    for (let k = i; k <= j; k++) out[idx[k][1]] = avg;
+    i = j + 1;
+  }
+  return out;
+}
+
+function spearman(x, y) {
+  if (x.length < 3) return null;
+  return pearson(ranks(x), ranks(y));
+}
+
+function buildComparison(seriesA, seriesB, minYears = MIN_YEARS_FOR_TREND) {
+  // seriesA, seriesB: [{year, value}]. Only years present in both are compared.
+  const mapB = new Map(seriesB.map(p => [p.year, p.value]));
+  const rows = seriesA.filter(p => mapB.has(p.year))
+    .map(p => ({ year: p.year, a: p.value, b: mapB.get(p.year), diff: p.value - mapB.get(p.year) }))
+    .sort((p, q) => p.year - q.year);
+  const n = rows.length;
+  const base = { n, rows, minYears };
+  if (n < 3) return { ...base, verdict: "too_few", pearson: null, spearman: null, meanDiff: null, flagged: [], pearsonWithoutFlagged: null, trendA: null, trendB: null };
+  const a = rows.map(r => r.a), b = rows.map(r => r.b);
+  const meanDiff = rows.reduce((s, r) => s + r.diff, 0) / n;
+  const flaggedYears = flagUnusualYears(rows.map(r => ({ year: r.year, value: r.diff })), COMPARE_FENCE_K, minYears).flagged.map(f => f.year);
+  const rest = rows.filter(r => !flaggedYears.includes(r.year));
+  const verdict = n < minYears ? "too_few" : (flaggedYears.length > 0 ? "diverge" : "agree");
+  return {
+    ...base, verdict, meanDiff,
+    pearson: pearson(a, b), spearman: spearman(a, b),
+    flagged: flaggedYears, pearsonWithoutFlagged: flaggedYears.length ? pearson(rest.map(r => r.a), rest.map(r => r.b)) : null,
+    trendA: analyzeTrend(rows.map(r => ({ year: r.year, value: r.a }))),
+    trendB: analyzeTrend(rows.map(r => ({ year: r.year, value: r.b })))
+  };
+}
+
+function describeComparison(cmp, opts = {}) {
+  const { label = "the series", unit = "", digits = 1, nameA = "Source A", nameB = "Source B" } = opts;
+  if (cmp.verdict === "too_few") return `Only ${cmp.n} year${cmp.n === 1 ? "" : "s"} in common: too few (at least ${cmp.minYears} are needed) to compare the two sources for ${label}.`;
+  const r = cmp.pearson === null ? "n/a" : cmp.pearson.toFixed(2);
+  const rs = cmp.spearman === null ? "n/a" : cmp.spearman.toFixed(2);
+  const higher = cmp.meanDiff >= 0 ? nameA : nameB;
+  const bias = `On average ${higher} is ${Math.abs(cmp.meanDiff).toFixed(digits)} ${unit} higher per year.`;
+  const stats = `Over ${cmp.n} common years the correlation is r = ${r} (Spearman ${rs}).`;
+  const verdictText = (t) => ({ increasing: "a significant increasing trend", decreasing: "a significant decreasing trend", none: "no significant trend", too_few: "too few years to test" })[t.verdict];
+  const trends = `Trend for ${label}: ${nameA} shows ${verdictText(cmp.trendA)}; ${nameB} shows ${verdictText(cmp.trendB)}.`;
+  if (cmp.verdict === "agree") return `No year stands out: the year-to-year difference between the two sources is never unusually large. ${stats} ${bias} ${trends}`;
+  const list = cmp.flagged.map(y => { const row = cmp.rows.find(q => q.year === y); return `${y} (${nameA} ${row.a.toFixed(digits)}, ${nameB} ${row.b.toFixed(digits)} ${unit})`; }).join("; ");
+  const without = cmp.pearsonWithoutFlagged === null ? "" : ` Without those years r = ${cmp.pearsonWithoutFlagged.toFixed(2)}.`;
+  return `The two sources disagree in ${cmp.flagged.length} year${cmp.flagged.length === 1 ? "" : "s"}, where the difference between them is unusually large: ${list}. ${stats}${without} ${bias} ${trends} This does not say which source is right; treat results that depend on those years with caution.`;
+}
+
+if (typeof module !== "undefined") {
+  const t = require("./trend_stats.js");
+  globalThis.MIN_YEARS_FOR_TREND = t.MIN_YEARS_FOR_TREND;
+  globalThis.flagUnusualYears = t.flagUnusualYears;
+  globalThis.analyzeTrend = t.analyzeTrend;
+  module.exports = { COMPARE_FENCE_K, pearson, spearman, ranks, buildComparison, describeComparison };
+}
+</script>
+<script>
 // ===== rainfall_onset.js (inlined by build.js: edit the module file, not this copy) =====
 // Rainfall onset detection and year-over-year variability analysis
 // Pure functions — no network, testable in isolation
@@ -972,7 +1179,7 @@ document.querySelectorAll("[data-tier]").forEach(btn => {
     render();
     if (document.getElementById("historical-content").style.display !== "none" &&
         document.getElementById("historical-results").innerHTML.trim() !== "") {
-      loadHistorical();
+      showHistorical();
     }
   });
 });
@@ -987,6 +1194,21 @@ document.getElementById("locationSelect").addEventListener("change", (e) => {
 let rainChart = null;
 let tempChart = null;
 let onsetChart = null;
+let historicalState = null;   // the loaded data, kept in memory so switching views does not download it again
+
+function escapeHtml(text) {
+  return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function historicalKey() {
+  return [document.getElementById("locationSelect").value, document.getElementById("histStartYear").value, document.getElementById("histEndYear").value].join("|");
+}
+
+function showHistorical() {
+  // Re-draw from memory when the same data is already loaded; otherwise fetch.
+  if (historicalState && historicalState.key === historicalKey()) renderHistorical(...historicalState.args);
+  else loadHistorical();
+}
 
 // The latest selectable year is the last complete calendar year (updates itself every year)
 (function setYearLimits() {
@@ -1047,13 +1269,17 @@ async function loadHistorical() {
       .map(r => ({ year: r.year, value: r.onsetDayOfYear }));
     const onsetTrend = analyzeTrend(validOnsetPoints);
 
-    renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
-                      wettestYear, driestYear, hottestYear, coldestYear,
-                      onsetResults, onsetStats, onsetTrend, rainSel, tempSel);
+    historicalState = {
+      key: historicalKey(), lat, lon, startY, endY, retrievedAt: new Date(), rainSel, tempSel, comparison: null,
+      args: [annualRain, annualTemp, rainTrend, tempTrend, wettestYear, driestYear, hottestYear, coldestYear,
+             onsetResults, onsetStats, onsetTrend, rainSel, tempSel]
+    };
+    renderHistorical(...historicalState.args);
 
   } catch (err) {
+    historicalState = null;
     resultsDiv.innerHTML = `<div class="error">
-      Could not load historical data: ${err.message}.<br>
+      Could not load historical data: ${escapeHtml(err.message)}.<br>
       NASA POWER can be slow or briefly unavailable — try a smaller year range or try again shortly.
     </div>`;
   }
@@ -1083,11 +1309,22 @@ function renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
     <div class="card" style="margin-bottom:14px;">
       <div class="card-label">About this data</div>
       <div class="explain">
-        Historical values are NASA POWER daily estimates for the chosen coordinates: gridded model and
-        satellite-derived data, not readings from a weather station. Trends use the Mann-Kendall test with
+        Historical values are ${DATA_SOURCES.nasa_power.name} daily estimates for the chosen coordinates
+        (retrieved ${historicalState ? historicalState.retrievedAt.toLocaleString() : "just now"}).
+        ${DATA_SOURCES.nasa_power.typeLabel}. ${DATA_SOURCES.nasa_power.origin} Trends use the Mann-Kendall test with
         Sen's slope at the 5% level, and a trend is only reported when the test supports it and at least
         ${MIN_YEARS_FOR_TREND} years are usable.
       </div>
+    </div>`;
+  const secondSourceCard = `
+    <div class="card" style="margin-bottom:14px;">
+      <div class="card-label">Second source check</div>
+      <div class="explain">
+        Compare these results with ${DATA_SOURCES.era5_open_meteo.name}: a different reanalysis. Agreement between
+        two sources makes a result more trustworthy; disagreement is a warning.
+      </div>
+      <button id="compareBtn" class="tier-btn" style="margin-top:8px; background:var(--cyan); color:#0a0e17;">Compare with ERA5</button>
+      <div id="compareResult" style="margin-top:10px;"></div>
     </div>`;
   const insufficientNote = onsetStats.insufficientYears.length
     ? `${onsetStats.insufficientYears.length} year(s) (${onsetStats.insufficientYears.join(", ")}) had too much missing data to decide the onset.`
@@ -1171,6 +1408,7 @@ function renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
   resultsDiv.innerHTML = `
     ${completenessCard}
     ${dataNoteCard}
+    ${secondSourceCard}
     <div class="card" style="margin-bottom:14px;">
       <div class="card-label">Summary (${currentTier} view)</div>
       ${currentTier === 'student' ? studentSummary : advancedSummary}
@@ -1277,6 +1515,86 @@ function renderHistorical(annualRain, annualTemp, rainTrend, tempTrend,
       }
     }
   });
+
+  bindComparison();
+}
+
+async function compareSources() {
+  const st = historicalState;
+  const box = document.getElementById("compareResult");
+  if (!st) return;
+  box.innerHTML = '<div class="status">Fetching ERA5 history from Open-Meteo...</div>';
+  try {
+    const response = await fetch(buildArchiveUrl(st.lat, st.lon, st.startY, st.endY));
+    if (!response.ok) {
+      throw new Error(`the service returned status ${response.status}` + (response.status === 429 ? " (too many requests: try again later or choose a shorter year range)" : ""));
+    }
+    const parsed = parseArchiveResponse(await response.json());
+    if (!parsed.ok) throw new Error(parsed.error);
+    const eraRainSel = selectCompleteYears(aggregateAnnualRainfall(parsed.rain), st.startY, st.endY);
+    const eraTempSel = selectCompleteYears(aggregateAnnualMeanTemp(parsed.temp), st.startY, st.endY);
+    st.comparison = {
+      retrievedAt: new Date(), eraRainSel, eraTempSel,
+      rainCmp: buildComparison(st.rainSel.eligible.map(y => ({ year: y.year, value: y.total })), eraRainSel.eligible.map(y => ({ year: y.year, value: y.total }))),
+      tempCmp: buildComparison(st.tempSel.eligible.map(y => ({ year: y.year, value: y.mean })), eraTempSel.eligible.map(y => ({ year: y.year, value: y.mean })))
+    };
+    showComparison();
+    try { applyComparisonOverlay(); } catch (overlayError) { /* the chart overlay is optional: the comparison text stays */ }
+  } catch (err) {
+    st.comparison = null;
+    box.innerHTML = `<div class="error">Could not load the second source: ${escapeHtml(String(err.message).replace(/\.$/, ""))}.<br>
+      Your NASA POWER results above are not affected. Check your connection and try again.</div>`;
+  }
+}
+
+function showComparison() {
+  const st = historicalState, box = document.getElementById("compareResult");
+  if (!st || !st.comparison || !box) return;
+  const c = st.comparison;
+  const namesA = { nameA: "NASA POWER", nameB: "ERA5" };
+  const rainText = describeComparison(c.rainCmp, { label: "annual rainfall", unit: "mm", digits: 1, ...namesA });
+  const tempText = describeComparison(c.tempCmp, { label: "annual mean temperature", unit: "°C", digits: 2, ...namesA });
+  const warn = (cmp) => cmp.verdict === "diverge" ? ' style="border-left-color:#f5a623;"' : "";
+  const table = currentTier === "student" ? "" : `
+    <table class="advanced-table" style="margin-top:10px;">
+      <tr><th>Year</th><th>NASA POWER (mm)</th><th>ERA5 (mm)</th><th>Difference</th></tr>
+      ${c.rainCmp.rows.map(r => `<tr><td>${r.year}${c.rainCmp.flagged.includes(r.year) ? " ⚠" : ""}</td><td>${r.a.toFixed(1)}</td><td>${r.b.toFixed(1)}</td><td>${r.diff >= 0 ? "+" : ""}${r.diff.toFixed(1)}</td></tr>`).join("")}
+    </table>`;
+  box.innerHTML = `
+    <div class="explain"${warn(c.rainCmp)}>${escapeHtml(rainText)}</div>
+    <div class="explain"${warn(c.tempCmp)}>${escapeHtml(tempText)}</div>
+    ${table}
+    <div class="explain" style="margin-top:8px;">
+      ${DATA_SOURCES.era5_open_meteo.name} retrieved ${c.retrievedAt.toLocaleString()}. ${DATA_SOURCES.era5_open_meteo.typeLabel}.
+      Years used: rainfall ${c.eraRainSel.eligible.length} of ${c.eraRainSel.eligible.length + c.eraRainSel.excluded.length},
+      temperature ${c.eraTempSel.eligible.length} of ${c.eraTempSel.eligible.length + c.eraTempSel.excluded.length}.
+    </div>`;
+}
+
+function applyComparisonOverlay() {
+  const st = historicalState;
+  if (!st || !st.comparison) return;
+  const c = st.comparison;
+  const overlay = (chart, labelsYears, eraPoints, valueKey, unitLabel) => {
+    if (!chart) return;
+    const byYear = new Map(eraPoints.map(p => [p.year, p[valueKey]]));
+    chart.data.datasets[0].label = "NASA POWER";
+    chart.data.datasets.push({
+      type: "line", label: "ERA5 (Open-Meteo)", data: labelsYears.map(y => byYear.has(y) ? byYear.get(y) : null),
+      borderColor: "#f5a623", backgroundColor: "#f5a623", pointRadius: 3, borderWidth: 2, tension: 0, spanGaps: false
+    });
+    chart.options.plugins = chart.options.plugins || {};
+    chart.options.plugins.legend = { display: true, labels: { color: "#9ca3af" } };
+    chart.update();
+  };
+  overlay(rainChart, st.rainSel.eligible.map(y => y.year), c.eraRainSel.eligible, "total");
+  overlay(tempChart, st.tempSel.eligible.map(y => y.year), c.eraTempSel.eligible, "mean");
+}
+
+function bindComparison() {
+  const btn = document.getElementById("compareBtn");
+  if (btn) btn.addEventListener("click", compareSources);
+  if (historicalState && historicalState.comparison) { showComparison(); applyComparisonOverlay(); }
 }
 
 document.getElementById("loadHistoricalBtn").addEventListener("click", loadHistorical);
